@@ -1,0 +1,43 @@
+#ifndef UREDIS_REDISSENTINEL_H
+#define UREDIS_REDISSENTINEL_H
+
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+#include <optional>
+
+#include "uredis/RedisClient.h"
+
+namespace usub::uredis
+{
+    namespace task = usub::uvent::task;
+
+    struct RedisSentinelNode
+    {
+        std::string host;
+        std::uint16_t port{26379};
+
+        std::optional<std::string> username;
+        std::optional<std::string> password;
+    };
+
+    struct RedisSentinelConfig
+    {
+        std::string master_name;
+
+        std::vector<RedisSentinelNode> sentinels;
+
+        int connect_timeout_ms{3000};
+        int io_timeout_ms{3000};
+
+        RedisConfig base_redis{};
+
+        std::size_t pool_size{4};
+    };
+
+    task::Awaitable<RedisResult<RedisConfig>> resolve_master_from_sentinel(
+        const RedisSentinelConfig& cfg);
+} // namespace usub::uredis
+
+#endif // UREDIS_REDISSENTINEL_H
