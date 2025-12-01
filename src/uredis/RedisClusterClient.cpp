@@ -307,6 +307,51 @@ namespace usub::uredis
         co_return node->client;
     }
 
+    task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
+    RedisClusterClient::get_or_create_client_for_slot_internal(
+        int slot)
+    {
+        if (slot < 0 || slot >= 16384)
+        {
+            RedisError err{
+                RedisErrorCategory::Protocol,
+                "RedisClusterClient: invalid slot"
+            };
+            co_return std::unexpected(err);
+        }
+
+        std::string host;
+        std::uint16_t port{0};
+
+        {
+            auto guard = co_await this->mutex_.lock();
+
+            if (this->nodes_.empty())
+            {
+                RedisError err{
+                    RedisErrorCategory::Protocol,
+                    "RedisClusterClient: no nodes for slot"
+                };
+                co_return std::unexpected(err);
+            }
+
+            int idx = this->slot_to_node_[slot];
+            if (idx < 0 || static_cast<std::size_t>(idx) >= this->nodes_.size())
+            {
+                RedisError err{
+                    RedisErrorCategory::Protocol,
+                    "RedisClusterClient: slot mapping is empty"
+                };
+                co_return std::unexpected(err);
+            }
+
+            host = this->nodes_[idx].cfg.host;
+            port = this->nodes_[idx].cfg.port;
+        }
+
+        co_return co_await this->get_or_create_client_for_node(host, port);
+    }
+
     task::Awaitable<void> RedisClusterClient::apply_moved(const Redirection& r)
     {
         if (r.slot < 0 || r.slot >= 16384)
@@ -337,6 +382,72 @@ namespace usub::uredis
         co_return;
     }
 
+    task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
+    RedisClusterClient::get_client_for_key(std::string_view key)
+    {
+        if (this->nodes_.empty())
+        {
+            auto d = co_await this->initial_discovery();
+            if (!d)
+                co_return std::unexpected(d.error());
+        }
+
+        if (key.empty())
+        {
+            co_return co_await this->get_any_client();
+        }
+
+        std::string key_copy{key};
+        std::string_view key_view{key_copy};
+        auto tag  = extract_hash_tag(key_view);
+        auto slot = calc_slot(tag.empty() ? key_view : tag);
+
+        co_return co_await this->get_or_create_client_for_slot_internal(static_cast<int>(slot));
+    }
+
+    task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
+    RedisClusterClient::get_any_client()
+    {
+        if (this->nodes_.empty())
+        {
+            auto d = co_await this->initial_discovery();
+            if (!d)
+                co_return std::unexpected(d.error());
+        }
+
+        std::string host;
+        std::uint16_t port{0};
+
+        {
+            auto guard = co_await this->mutex_.lock();
+            if (this->nodes_.empty())
+            {
+                RedisError err{
+                    RedisErrorCategory::Protocol,
+                    "RedisClusterClient: no nodes for get_any_client"
+                };
+                co_return std::unexpected(err);
+            }
+            host = this->nodes_.front().cfg.host;
+            port = this->nodes_.front().cfg.port;
+        }
+
+        co_return co_await this->get_or_create_client_for_node(host, port);
+    }
+
+    task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
+    RedisClusterClient::get_client_for_slot(int slot)
+    {
+        if (this->nodes_.empty())
+        {
+            auto d = co_await this->initial_discovery();
+            if (!d)
+                co_return std::unexpected(d.error());
+        }
+
+        co_return co_await this->get_or_create_client_for_slot_internal(slot);
+    }
+
     task::Awaitable<RedisResult<RedisValue>> RedisClusterClient::command(
         std::string_view cmd,
         std::span<const std::string_view> args)
@@ -360,56 +471,17 @@ namespace usub::uredis
 
             if (args.empty())
             {
-                {
-                    auto guard = co_await this->mutex_.lock();
-                    if (this->nodes_.empty())
-                    {
-                        RedisError err{
-                            RedisErrorCategory::Protocol,
-                            "RedisClusterClient: no nodes for keyless command"
-                        };
-                        co_return std::unexpected(err);
-                    }
-
-                    Node& n = this->nodes_.front();
-                    if (!n.client)
-                    {
-                        n.client = std::make_shared<RedisClient>(n.cfg);
-                        auto c = co_await n.client->connect();
-                        if (!c)
-                            co_return std::unexpected(c.error());
-                    }
-                    client = n.client;
-                }
+                auto c = co_await this->get_any_client();
+                if (!c)
+                    co_return std::unexpected(c.error());
+                client = c.value();
             }
             else
             {
-                std::string_view key_view{key_copy};
-                auto tag = extract_hash_tag(key_view);
-                auto slot = calc_slot(tag.empty() ? key_view : tag);
-
-                {
-                    auto guard = co_await this->mutex_.lock();
-                    int idx = this->slot_to_node_[slot];
-                    if (idx < 0 || static_cast<std::size_t>(idx) >= this->nodes_.size())
-                    {
-                        RedisError err{
-                            RedisErrorCategory::Protocol,
-                            "RedisClusterClient: slot mapping is empty"
-                        };
-                        co_return std::unexpected(err);
-                    }
-
-                    Node& n = this->nodes_[idx];
-                    if (!n.client)
-                    {
-                        n.client = std::make_shared<RedisClient>(n.cfg);
-                        auto c = co_await n.client->connect();
-                        if (!c)
-                            co_return std::unexpected(c.error());
-                    }
-                    client = n.client;
-                }
+                auto c = co_await this->get_client_for_key(key_copy);
+                if (!c)
+                    co_return std::unexpected(c.error());
+                client = c.value();
             }
 
             auto resp = co_await client->command(cmd, args);

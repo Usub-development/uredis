@@ -1,14 +1,13 @@
 #ifndef UREDIS_REDISSENTINELPOOL_H
 #define UREDIS_REDISSENTINELPOOL_H
 
-#include <array>
 #include <memory>
+#include <string>
 #include <span>
-#include <string_view>
 
 #include "uvent/sync/AsyncMutex.h"
+#include "uredis/RedisClient.h"
 #include "uredis/RedisSentinel.h"
-#include "uredis/RedisPool.h"
 
 namespace usub::uredis
 {
@@ -22,11 +21,13 @@ namespace usub::uredis
 
         task::Awaitable<RedisResult<void>> connect();
 
+        task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>> get_master_client();
+
         task::Awaitable<RedisResult<RedisValue>> command(
             std::string_view cmd,
             std::span<const std::string_view> args);
 
-        template <typename... Args>
+        template<typename... Args>
         task::Awaitable<RedisResult<RedisValue>> command(
             std::string_view cmd,
             Args&&... args)
@@ -39,18 +40,18 @@ namespace usub::uredis
                 std::span<const std::string_view>(arr.data(), arr.size()));
         }
 
-        const RedisSentinelConfig& config() const { return this->cfg_; }
+        const RedisSentinelConfig& config() const { return cfg_; }
 
     private:
         RedisSentinelConfig cfg_;
 
-        std::shared_ptr<RedisPool> pool_;
+        std::shared_ptr<RedisClient> master_;
         bool connected_{false};
 
         sync::AsyncMutex mutex_;
 
         task::Awaitable<RedisResult<void>> ensure_connected_locked();
     };
-} // namespace usub::uredis
+}
 
-#endif // UREDIS_REDISSENTINELPOOL_H
+#endif

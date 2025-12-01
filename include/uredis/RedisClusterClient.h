@@ -61,6 +61,15 @@ namespace usub::uredis
                 std::span<const std::string_view>(arr.data(), arr.size()));
         }
 
+        task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
+        get_client_for_key(std::string_view key);
+
+        task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
+        get_any_client();
+
+        task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
+        get_client_for_slot(int slot);
+
     private:
         struct Node
         {
@@ -94,6 +103,9 @@ namespace usub::uredis
         task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>> get_or_create_client_for_node(
             std::string_view host,
             std::uint16_t port);
+
+        task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>> get_or_create_client_for_slot_internal(
+            int slot);
 
         static std::string_view extract_hash_tag(std::string_view key);
         static std::uint16_t calc_slot(std::string_view key);

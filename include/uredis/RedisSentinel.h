@@ -32,12 +32,10 @@ namespace usub::uredis
         int io_timeout_ms{3000};
 
         RedisConfig base_redis{};
-
-        std::size_t pool_size{4};
     };
 
-    task::Awaitable<RedisResult<RedisConfig>> resolve_master_from_sentinel(
-        const RedisSentinelConfig& cfg);
-} // namespace usub::uredis
+    task::Awaitable<RedisResult<RedisConfig>>
+    resolve_master_from_sentinel(const RedisSentinelConfig& cfg);
+}
 
-#endif // UREDIS_REDISSENTINEL_H
+#endif

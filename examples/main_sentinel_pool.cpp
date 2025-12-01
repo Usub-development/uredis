@@ -9,44 +9,54 @@ namespace task = usub::uvent::task;
 using usub::ulog::info;
 using usub::ulog::error;
 
-task::Awaitable<void> example_sentinel_pool()
+task::Awaitable<void> example_sentinel()
 {
-    info("example_sentinel_pool: start");
+    info("example_sentinel: start");
 
     RedisSentinelConfig scfg;
     scfg.master_name = "mymaster";
-    scfg.sentinels.push_back(
-        RedisSentinelNode{
-            .host = "127.0.0.1",
-            .port = 26379
-        });
+    scfg.sentinels = {
+        {"127.0.0.1", 26379}
+    };
     scfg.base_redis.db = 0;
     scfg.base_redis.io_timeout_ms = 5000;
-    scfg.pool_size = 8;
 
-    RedisSentinelPool pool{scfg};
+    RedisSentinelPool sp{scfg};
 
-    auto c = co_await pool.connect();
+    info("example_sentinel: resolving master via sentinel...");
+    auto c = co_await sp.connect();
     if (!c)
     {
         const auto& err = c.error();
-        error("example_sentinel_pool: connect failed, category={}, message={}",
+        error("example_sentinel: connect failed: category={} message={}",
               static_cast<int>(err.category), err.message);
         co_return;
     }
 
-    auto r = co_await pool.command("INCRBY", "counter", "1");
+    auto client_res = co_await sp.get_master_client();
+    if (!client_res)
+    {
+        const auto& err = client_res.error();
+        error("example_sentinel: get_master_client failed: category={} message={}",
+              static_cast<int>(err.category), err.message);
+        co_return;
+    }
+
+    auto client = client_res.value();
+    info("example_sentinel: using master {}:{}", client->config().host, client->config().port);
+
+    auto r = co_await client->incrby("counter", 1);
     if (!r)
     {
         const auto& err = r.error();
-        error("example_sentinel_pool: INCRBY failed, category={}, message={}",
+        error("example_sentinel: INCRBY failed: category={} message={}",
               static_cast<int>(err.category), err.message);
         co_return;
     }
 
-    const RedisValue& v = *r;
-    info("example_sentinel_pool: counter -> {}", v.as_integer());
-    info("example_sentinel_pool: done");
+    info("example_sentinel: counter = {}", r.value());
+    info("example_sentinel: done");
+
     co_return;
 }
 
@@ -70,6 +80,8 @@ int main()
     usub::ulog::init(log_cfg);
 
     usub::Uvent uvent(4);
-    usub::uvent::system::co_spawn(example_sentinel_pool());
+    usub::uvent::system::co_spawn(example_sentinel());
     uvent.run();
+
+    return 0;
 }

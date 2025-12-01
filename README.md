@@ -1,19 +1,19 @@
 # uRedis
 
-uRedis is a small async Redis client library built on top of
+uRedis is a small, async-first Redis client library built on top of
 [uvent](https://github.com/Usub-development/uvent).
 
 It provides:
 
-- `RedisClient` – single async connection with RESP parsing and a small typed API.
-- `RedisPool` – round-robin pool of `RedisClient` instances.
+- `RedisClient` – single async connection with RESP parsing and typed helpers.
+- `RedisPool` – round-robin pool of multiple RedisClient instances.
 - `RedisSubscriber` – low-level SUBSCRIBE / PSUBSCRIBE client.
 - `RedisBus` – high-level resilient pub/sub bus with auto-reconnect and resubscription.
 - `RedisValue` / `RedisResult` / `RedisError` – result and error types.
-- `RespParser` – incremental RESP parser.
-- `reflect` helpers – map C++ aggregates to Redis hashes (`HSET`/`HGETALL`) using **ureflect**.
-- (optional) **Sentinel / master discovery** – connect to Redis master via Sentinel and auto-reconnect after failover.
-- (optional) **Cluster client** – client that routes commands by hash slot across Redis Cluster nodes.
+- `RespParser` – incremental RESP parser, fully implemented in C++.
+- `reflect` helpers – map C++ aggregates to Redis hashes (`HSET` / `HGETALL`) using **ureflect**.
+- (optional) **Sentinel support** – resolve current master, auto-reconnect, retrieve a real `RedisClient`.
+- (optional) **Cluster client** – route commands by hash slot, get a real `RedisClient` bound to a slot.
 - (optional) **Redlock** – distributed locks across multiple Redis instances.
 
 Documentation: **https://usub-development.github.io/uredis/**
@@ -22,19 +22,29 @@ Documentation: **https://usub-development.github.io/uredis/**
 
 ## Features
 
-- Async, coroutine-based API (`task::Awaitable<>`).
-- RESP parser with incremental feeding (no hiredis, parser is implemented directly in C++).
-- Simple error model:
-  - `Io` – connection / timeout / write/read failures
-  - `Protocol` – malformed / unexpected reply
-  - `ServerReply` – `-ERR ...` from Redis
+- Async coroutine-based API (`task::Awaitable<>`)
+- Zero external Redis dependencies (no hiredis)
+- Clean error model:
+    - `Io` – connection / timeout / read/write error
+    - `Protocol` – malformed reply or unexpected type
+    - `ServerReply` – `-ERR ...` from Redis
 - Pub/Sub:
-  - raw `RedisSubscriber`
-  - higher-level `RedisBus` with:
-    - separate pub/sub connections
-    - periodic `PING`
-    - reconnect loop and resubscription
-- Reflection helpers for `HSET` / `HGETALL` with aggregates.
+    - raw `RedisSubscriber`
+    - higher-level `RedisBus` with:
+        - dedicated pub/sub connections
+        - periodic `PING`
+        - reconnect + resubscribe loop
+- Sentinel:
+    - resolve master via `SENTINEL get-master-addr-by-name`
+    - lazily connect to current master
+    - `get_master_client()` → full RedisClient API
+    - automatic re-resolve on I/O errors
+- Cluster:
+    - CRC16 hashing
+    - MOVED and ASK redirection
+    - auto-discovery with `CLUSTER SLOTS`
+    - `get_client_for_key()` → real RedisClient for the slot
+- Reflection helpers compatible with single client, Sentinel, and Cluster
 
 ---
 
@@ -42,36 +52,36 @@ Documentation: **https://usub-development.github.io/uredis/**
 
 - C++23
 - [uvent](https://github.com/Usub-development/uvent)
-- [ulog](https://github.com/Usub-development/ulog) (for logging) (optional)
-- [ureflect](https://github.com/Usub-development/ureflect) (for reflection helpers)
+- [ulog](https://github.com/Usub-development/ulog) *(optional, for logging)*
+- [ureflect](https://github.com/Usub-development/ureflect) *(for reflection helpers)*
 
-Redis server 6+ is recommended but not strictly required.
+Redis 6+ recommended (RESP3 works but RESP2 is fully supported).
 
 ---
 
 ## Building / Integration
 
-### FetchContent (example)
+### CMake FetchContent example
 
 ```cmake
 include(FetchContent)
 
 FetchContent_Declare(
-    uvent
-    GIT_REPOSITORY https://github.com/Usub-development/uvent.git
-    GIT_TAG main
+        uvent
+        GIT_REPOSITORY https://github.com/Usub-development/uvent.git
+        GIT_TAG main
 )
 
 FetchContent_Declare(
-    ureflect
-    GIT_REPOSITORY https://github.com/Usub-development/ureflect.git
-    GIT_TAG main
+        ureflect
+        GIT_REPOSITORY https://github.com/Usub-development/ureflect.git
+        GIT_TAG main
 )
 
 FetchContent_Declare(
-    uredis
-    GIT_REPOSITORY https://github.com/Usub-development/uredis.git
-    GIT_TAG main
+        uredis
+        GIT_REPOSITORY https://github.com/Usub-development/uredis.git
+        GIT_TAG main
 )
 
 FetchContent_MakeAvailable(uvent ureflect uredis)
@@ -79,20 +89,20 @@ FetchContent_MakeAvailable(uvent ureflect uredis)
 add_executable(my_app main.cpp)
 
 target_link_libraries(my_app
-    PRIVATE
+        PRIVATE
         uvent
         uredis
         ureflect
 )
-````
+```
 
-### Enable internal logs
+### Enable built-in logs
 
 ```cmake
 target_compile_definitions(uredis PUBLIC UREDIS_LOGS)
 ```
 
-uRedis logging goes through `ulog`.
+Logs are emitted through `ulog`.
 
 ---
 
@@ -109,89 +119,37 @@ using namespace usub::uvent;
 using namespace usub::uredis;
 namespace task = usub::uvent::task;
 
-task::Awaitable<void> redis_example()
+task::Awaitable<void> example_single()
 {
-    usub::ulog::info("redis_example: start");
-
     RedisConfig cfg;
     cfg.host = "127.0.0.1";
     cfg.port = 15100;
-
-    usub::ulog::info("redis_example: connecting to Redis {}:{}", cfg.host, cfg.port);
 
     RedisClient client{cfg};
     auto c = co_await client.connect();
     if (!c)
     {
-        const auto& err = c.error();
-        usub::ulog::error("redis_example: connect failed, category={}, message={}",
-                          static_cast<int>(err.category), err.message);
+        usub::ulog::error("connect failed: {}", c.error().message);
         co_return;
     }
 
-    usub::ulog::info("redis_example: connected");
+    co_await client.set("foo", "bar");
 
-    auto set_res = co_await client.set("foo", "bar");
-    if (!set_res)
-    {
-        const auto& err = set_res.error();
-        usub::ulog::error("redis_example: SET foo=bar failed, category={}, message={}",
-                          static_cast<int>(err.category), err.message);
-        co_return;
-    }
-    usub::ulog::info("redis_example: SET foo=bar ok");
+    auto g = co_await client.get("foo");
+    if (g && g.value().has_value())
+        usub::ulog::info("foo = {}", *g.value());
 
-    auto get_res = co_await client.get("foo");
-    if (!get_res)
-    {
-        const auto& err = get_res.error();
-        usub::ulog::error("redis_example: GET foo failed, category={}, message={}",
-                          static_cast<int>(err.category), err.message);
-        co_return;
-    }
-
-    if (get_res.value().has_value())
-    {
-        auto val = get_res.value().value();
-        usub::ulog::info("redis_example: GET foo -> '{}'", val);
-    }
-    else
-    {
-        usub::ulog::warn("redis_example: GET foo -> (nil)");
-    }
-
-    usub::ulog::info("redis_example: done");
     co_return;
 }
 
 int main()
 {
-    usub::ulog::ULogInit log_cfg{
-        .trace_path = nullptr,
-        .debug_path = nullptr,
-        .info_path = nullptr,
-        .warn_path = nullptr,
-        .error_path = nullptr,
-        .flush_interval_ns = 2'000'000ULL,
-        .queue_capacity = 16384,
-        .batch_size = 512,
-        .enable_color_stdout = true,
-        .max_file_size_bytes = 10 * 1024 * 1024,
-        .max_files = 3,
-        .json_mode = false,
-        .track_metrics = true
-    };
-
+    usub::ulog::ULogInit log_cfg{ .enable_color_stdout = true };
     usub::ulog::init(log_cfg);
 
-    usub::ulog::info("main: starting uvent");
-
-    usub::Uvent uvent(4);
-    usub::uvent::system::co_spawn(redis_example());
+    Uvent uvent(4);
+    system::co_spawn(example_single());
     uvent.run();
-
-    usub::ulog::info("main: uvent stopped");
-    return 0;
 }
 ```
 
@@ -200,184 +158,112 @@ int main()
 ## Pool example
 
 ```cpp
-#include "uvent/Uvent.h"
-#include "uredis/RedisClient.h"
-#include "uredis/RedisPool.h"
-#include <ulog/ulog.h>
-
-using namespace usub::uvent;
-using namespace usub::uredis;
-namespace task = usub::uvent::task;
-
 task::Awaitable<void> example_pool()
 {
-    usub::ulog::info("example_pool: start");
-
     RedisPoolConfig pcfg;
     pcfg.host = "127.0.0.1";
     pcfg.port = 15100;
-    pcfg.db   = 0;
     pcfg.size = 8;
 
     RedisPool pool{pcfg};
-    auto rc = co_await pool.connect_all();
-    if (!rc)
-    {
-        const auto& err = rc.error();
-        usub::ulog::error("example_pool: connect_all failed, category={}, message={}",
-                          static_cast<int>(err.category), err.message);
-        co_return;
-    }
-    usub::ulog::info("example_pool: all clients connected");
+    co_await pool.connect_all();
 
     auto r = co_await pool.command("INCRBY", "counter", "1");
-    if (!r)
-    {
-        const auto& err = r.error();
-        usub::ulog::error("example_pool: INCRBY counter 1 failed, category={}, message={}",
-                          static_cast<int>(err.category), err.message);
-        co_return;
-    }
+    if (r && r->is_integer())
+        usub::ulog::info("counter = {}", r->as_integer());
 
-    const RedisValue& v = *r;
-    if (!v.is_integer())
-    {
-        usub::ulog::error("example_pool: INCRBY unexpected reply type");
-        co_return;
-    }
-
-    usub::ulog::info("example_pool: INCRBY counter -> {}", v.as_integer());
-    usub::ulog::info("example_pool: done");
     co_return;
-}
-
-int main()
-{
-    usub::ulog::ULogInit log_cfg{
-        .trace_path = nullptr,
-        .debug_path = nullptr,
-        .info_path = nullptr,
-        .warn_path = nullptr,
-        .error_path = nullptr,
-        .flush_interval_ns = 2'000'000ULL,
-        .queue_capacity = 16384,
-        .batch_size = 512,
-        .enable_color_stdout = true,
-        .max_file_size_bytes = 10 * 1024 * 1024,
-        .max_files = 3,
-        .json_mode = false,
-        .track_metrics = true
-    };
-
-    usub::ulog::init(log_cfg);
-
-    usub::ulog::info("main(pool): starting uvent");
-
-    usub::Uvent uvent(4);
-    usub::uvent::system::co_spawn(example_pool());
-    uvent.run();
-
-    usub::ulog::info("main(pool): uvent stopped");
-    return 0;
 }
 ```
 
 ---
 
-## Pub/Sub and RedisBus
+## Sentinel example (new API)
 
-For complete pub/sub and bus examples (including `RedisSubscriber`, `RedisBus`, `subscriber_coro`, `publisher_coro`, `control_coro`, and `bus_user_coro`), see the **Examples** and **Pub/Sub / RedisBus** sections in the docs:
+Sentinel returns a **real RedisClient** bound to the current master.
 
-* [https://usub-development.github.io/uredis/examples/#pubsub-low-level](https://usub-development.github.io/uredis/examples/#pubsub-low-level)
+```cpp
+#include "uredis/RedisSentinelPool.h"
+
+task::Awaitable<void> example_sentinel()
+{
+    RedisSentinelConfig cfg;
+    cfg.master_name = "mymaster";
+    cfg.sentinels = { {"127.0.0.1", 26379} };
+
+    RedisSentinelPool sp{cfg};
+    co_await sp.connect();
+
+    auto client_res = co_await sp.get_master_client();
+    if (!client_res)
+        co_return;
+
+    auto client = client_res.value();
+    co_await client->set("mkey", "123");
+
+    auto g = co_await client->get("mkey");
+    if (g && g->has_value())
+        usub::ulog::info("master says: {}", **g);
+
+    co_return;
+}
+```
+
+---
+
+## Cluster example (new API)
+
+Cluster client also returns a **real RedisClient** for the correct slot.
+
+```cpp
+#include "uredis/RedisClusterClient.h"
+
+task::Awaitable<void> example_cluster()
+{
+    RedisClusterConfig cfg;
+    cfg.seeds = { {"127.0.0.1", 7000}, {"127.0.0.1", 7001} };
+
+    RedisClusterClient cluster{cfg};
+    co_await cluster.connect();
+
+    auto client_res = co_await cluster.get_client_for_key("user:42");
+    if (!client_res)
+        co_return;
+
+    auto client = client_res.value();
+    co_await client->set("user:42", "Kirill");
+
+    auto g = co_await client->get("user:42");
+    if (g && g->has_value())
+        usub::ulog::info("user:42 = {}", **g);
+
+    co_return;
+}
+```
 
 ---
 
 ## Reflection helpers
 
+Works with:
+
+* single RedisClient
+* Sentinel (`get_master_client()`)
+* Cluster (`get_client_for_key()`)
+
 ```cpp
-#include "uvent/Uvent.h"
-#include "uredis/RedisClient.h"
 #include "uredis/RedisReflect.h"
-#include <ulog/ulog.h>
 
-using namespace usub::uvent;
-using namespace usub::uredis;
-namespace task = usub::uvent::task;
+struct User { int64_t id; std::string name; bool active; };
 
-using usub::ulog::info;
-using usub::ulog::error;
+using namespace usub::uredis::reflect;
 
-struct User
-{
-    int64_t id;
-    std::string name;
-    bool active;
-    std::optional<int64_t> age;
-};
-
-task::Awaitable<void> reflect_example()
-{
-    info("reflect_example: start");
-
-    RedisConfig cfg;
-    cfg.host = "127.0.0.1";
-    cfg.port = 15100;
-
-    RedisClient client{cfg};
-    auto c = co_await client.connect();
-    if (!c)
-    {
-        const auto& err = c.error();
-        error("reflect_example: connect failed, category={}, message={}",
-              static_cast<int>(err.category), err.message);
-        co_return;
-    }
-    info("reflect_example: connected");
-
-    using namespace usub::uredis::reflect;
-
-    User u{.id = 42, .name = "Kirill", .active = true, .age = 30};
-
-    auto hset_res = co_await hset_struct(client, "user:42", u);
-    if (!hset_res)
-    {
-        const auto& err = hset_res.error();
-        error("reflect_example: hset_struct failed, category={}, message={}",
-              static_cast<int>(err.category), err.message);
-        co_return;
-    }
-    info("reflect_example: hset_struct user:42 fields={}", hset_res.value());
-
-    auto loaded = co_await hget_struct<User>(client, "user:42");
-    if (!loaded)
-    {
-        const auto& err = loaded.error();
-        error("reflect_example: hget_struct failed, category={}, message={}",
-              static_cast<int>(err.category), err.message);
-        co_return;
-    }
-
-    if (!loaded.value().has_value())
-    {
-        info("reflect_example: hget_struct user:42 -> (nil)");
-    }
-    else
-    {
-        const User& u2 = *loaded.value();
-        info("reflect_example: hget_struct user:42 -> id={} name='{}' active={} age={}",
-             u2.id,
-             u2.name,
-             u2.active,
-             u2.age.has_value() ? std::to_string(*u2.age) : std::string("<null>"));
-    }
-
-    info("reflect_example: done");
-    co_return;
-}
+auto h1 = co_await hset_struct(*client, "user:42", u);
+auto h2 = co_await hget_struct<User>(*client, "user:42");
 ```
 
 ---
 
-# Licence
+## License
 
-uredis is distributed under the [MIT license](LICENSE)
+uRedis is distributed under the [MIT license](LICENSE).

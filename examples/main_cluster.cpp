@@ -11,6 +11,8 @@ using usub::ulog::error;
 
 task::Awaitable<void> cluster_example()
 {
+    info("cluster_example: start");
+
     RedisClusterConfig cfg;
     cfg.seeds = {
         {"127.0.0.1", 7000},
@@ -20,6 +22,7 @@ task::Awaitable<void> cluster_example()
 
     RedisClusterClient cluster{cfg};
 
+    info("cluster_example: connecting to cluster...");
     auto c = co_await cluster.connect();
     if (!c)
     {
@@ -28,31 +31,51 @@ task::Awaitable<void> cluster_example()
               static_cast<int>(e.category), e.message);
         co_return;
     }
+    info("cluster_example: cluster discovery OK");
 
-    auto r1 = co_await cluster.command("SET", "user:42", "Kirill");
-    if (!r1)
+    auto client_res = co_await cluster.get_client_for_key("user:42");
+    if (!client_res)
     {
-        const auto& e = r1.error();
+        const auto& e = client_res.error();
+        error("cluster_example: get_client_for_key failed: category={} message={}",
+              static_cast<int>(e.category), e.message);
+        co_return;
+    }
+    auto client = client_res.value();
+
+    info("cluster_example: using node {}:{} for key 'user:42'",
+         client->config().host, client->config().port);
+
+    auto set_res = co_await client->set("user:42", "Kirill");
+    if (!set_res)
+    {
+        const auto& e = set_res.error();
         error("cluster_example: SET failed: category={} message={}",
               static_cast<int>(e.category), e.message);
         co_return;
     }
+    info("cluster_example: SET user:42 = 'Kirill' OK");
 
-    auto r2 = co_await cluster.command("GET", "user:42");
-    if (!r2)
+    auto get_res = co_await client->get("user:42");
+    if (!get_res)
     {
-        const auto& e = r2.error();
+        const auto& e = get_res.error();
         error("cluster_example: GET failed: category={} message={}",
               static_cast<int>(e.category), e.message);
         co_return;
     }
 
-    const RedisValue& v = *r2;
-    if (v.is_bulk_string() || v.is_simple_string())
+    const auto& opt = get_res.value();
+    if (opt.has_value())
     {
-        info("cluster_example: GET user:42 -> '{}'", v.as_string());
+        info("cluster_example: GET user:42 -> '{}'", *opt);
+    }
+    else
+    {
+        info("cluster_example: GET user:42 -> <nil>");
     }
 
+    info("cluster_example: done");
     co_return;
 }
 
