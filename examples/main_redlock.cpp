@@ -7,7 +7,6 @@ using namespace usub::uvent;
 using namespace usub::uredis;
 
 namespace task   = usub::uvent::task;
-namespace system = usub::uvent::system;
 
 using usub::ulog::info;
 using usub::ulog::warn;
