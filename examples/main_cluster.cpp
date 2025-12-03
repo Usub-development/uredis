@@ -22,7 +22,7 @@ task::Awaitable<void> cluster_example()
 
     RedisClusterClient cluster{cfg};
 
-    info("cluster_example: connecting to cluster...");
+    info("cluster_example: connecting to cluster (discovery + pool prewarm)...");
     auto c = co_await cluster.connect();
     if (!c)
     {
@@ -31,7 +31,7 @@ task::Awaitable<void> cluster_example()
               static_cast<int>(e.category), e.message);
         co_return;
     }
-    info("cluster_example: cluster discovery OK");
+    info("cluster_example: cluster discovery OK, pools prewarmed");
 
     {
         std::string_view key = "user:42";
@@ -40,8 +40,9 @@ task::Awaitable<void> cluster_example()
         info("cluster_example: SET {} = '{}'", key, value);
 
         std::array<std::string_view, 2> args{key, value};
-        auto set_res = co_await cluster.command("SET",
-                                                std::span<const std::string_view>(args.data(), args.size()));
+        auto set_res = co_await cluster.command(
+            "SET",
+            std::span<const std::string_view>(args.data(), args.size()));
 
         if (!set_res)
         {
@@ -67,8 +68,9 @@ task::Awaitable<void> cluster_example()
         info("cluster_example: GET {}", key);
 
         std::array<std::string_view, 1> args{key};
-        auto get_res = co_await cluster.command("GET",
-                                                std::span<const std::string_view>(args.data(), args.size()));
+        auto get_res = co_await cluster.command(
+            "GET",
+            std::span<const std::string_view>(args.data(), args.size()));
 
         if (!get_res)
         {
@@ -100,10 +102,14 @@ task::Awaitable<void> cluster_example()
 
 task::Awaitable<void> cluster_raw_client_example()
 {
+    info("cluster_raw_client_example: start");
+
     RedisClusterConfig cfg;
     cfg.seeds = {
         {"127.0.0.1", 7000}
     };
+    cfg.max_redirections = 8;
+    cfg.max_connections_per_node = 4;
 
     RedisClusterClient cluster{cfg};
 
@@ -129,7 +135,7 @@ task::Awaitable<void> cluster_raw_client_example()
     info("cluster_raw_client_example: node {}:{}",
          client->config().host, client->config().port);
 
-    auto set_res = co_await client->set("user:42", "Kirill");
+    auto set_res = co_await client->set("user:42", "Kirill-raw");
     if (!set_res)
     {
         const auto& e = set_res.error();
@@ -152,6 +158,14 @@ task::Awaitable<void> cluster_raw_client_example()
     else
         info("cluster_raw_client_example: GET user:42 -> <nil>");
 
+    info("cluster_raw_client_example: done");
+    co_return;
+}
+
+task::Awaitable<void> run_all()
+{
+    co_await cluster_example();
+    co_await cluster_raw_client_example();
     co_return;
 }
 
@@ -177,7 +191,7 @@ int main()
     info("main(cluster): starting uvent");
 
     usub::Uvent uvent(4);
-    usub::uvent::system::co_spawn(cluster_example());
+    usub::uvent::system::co_spawn(run_all());
     uvent.run();
 
     info("main(cluster): uvent stopped");

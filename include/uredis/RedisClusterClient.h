@@ -122,8 +122,11 @@ namespace usub::uredis
         std::array<int, 16384> slot_to_node_{};
 
         sync::AsyncMutex mutex_;
+        std::atomic<bool> connected_{false};
 
         task::Awaitable<RedisResult<void>> initial_discovery();
+
+        task::Awaitable<void> prewarm_pools();
 
         task::Awaitable<RedisResult<PooledClient>>
         acquire_client_for_node_locked(const std::shared_ptr<Node>& node);

@@ -161,6 +161,11 @@ namespace usub::uredis
 
     task::Awaitable<RedisResult<void>> RedisClusterClient::initial_discovery()
     {
+        if (this->connected_.load(std::memory_order_acquire))
+        {
+            co_return RedisResult<void>{};
+        }
+
         if (this->cfg_.seeds.empty())
         {
             RedisError err{
@@ -308,6 +313,8 @@ namespace usub::uredis
                 seed.port);
 #endif
 
+            co_await this->prewarm_pools();
+            this->connected_.store(true, std::memory_order_release);
             co_return RedisResult<void>{};
         }
 
@@ -316,6 +323,48 @@ namespace usub::uredis
             "RedisClusterClient: CLUSTER SLOTS failed on all seeds"
         };
         co_return std::unexpected(err);
+    }
+
+    task::Awaitable<void> RedisClusterClient::prewarm_pools()
+    {
+        std::vector<std::shared_ptr<Node>> snapshot;
+        {
+            auto guard = co_await this->mutex_.lock();
+            snapshot = this->nodes_;
+        }
+
+        for (auto& node : snapshot)
+        {
+            auto cur = node->live_count.load(std::memory_order_relaxed);
+            if (cur >= this->cfg_.max_connections_per_node)
+                continue;
+
+            for (std::size_t i = cur; i < this->cfg_.max_connections_per_node; ++i)
+            {
+                auto cli = std::make_shared<RedisClient>(node->cfg);
+                auto c = co_await cli->connect();
+                if (!c)
+                {
+#ifdef UREDIS_LOGS
+                    auto& e = c.error();
+                    usub::ulog::warn(
+                        "RedisClusterClient::prewarm_pools: connect to {}:{} failed: {}",
+                        node->cfg.host,
+                        node->cfg.port,
+                        e.message);
+#endif
+                    break;
+                }
+
+                if (!node->idle.try_enqueue(cli))
+                {
+                    break;
+                }
+                node->live_count.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+        co_return;
     }
 
     task::Awaitable<RedisResult<void>> RedisClusterClient::connect()

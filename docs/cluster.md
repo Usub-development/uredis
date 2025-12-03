@@ -6,26 +6,44 @@ uRedis includes a production-grade async **Redis Cluster router** built on top o
 - Full MOVED / ASK redirection support
 - Automatic `CLUSTER SLOTS` discovery
 - Individual async `RedisClient` per node
-- Lazy connection buildup
+- **Per-node async connection pool (MPMC + async mutex)**
+- Lazy connection buildup **with optional prewarm during `connect()`**
 - Zero extra dependencies
 
 Cluster mode is sharded across **16384 slots**.  
-`RedisClusterClient` selects the correct node for a given key and returns a regular `RedisClient`,
-so you keep the full high-level API (`get/set`, hashes, sets, sorted sets, reflection helpers, etc.).
+`RedisClusterClient` selects the correct node for a given key and returns a regular `RedisClient`
+or executes the command via the node’s **connection pool**, depending on API used.
 
 ## Architecture
 
 - `RedisClusterClient`
-    - `connect()` – runs initial `CLUSTER SLOTS` discovery
-    - `get_client_for_key(key)` – returns a connected `RedisClient` for the key's slot
-    - `get_random_client()` – returns any connected node (for keyless commands)
+    - `connect()` – runs initial `CLUSTER SLOTS` discovery  
+      **(also prewarms pools up to `max_connections_per_node`)**
+    - `command(cmd, args...)` – routes the command through the per-node pool
+    - `get_client_for_key(key)` – returns the node’s **main client** (not from pool)
+    - `get_random_client()` – same (main client), for keyless commands
 - Slot table: `slot_to_node[16384]`
-- Dynamic node list with lazy connections
+- Dynamic node list with lazy creation of `main_client` and pooled clients
 - Redirection handling:
-    - **MOVED** → update slot mapping + retry with the new node
+    - **MOVED** → update slot mapping + retry
     - **ASK** → send `ASKING` to target node + retry once
 
-## Example (basic key routing)
+## Connection Pool (New)
+
+Each cluster node now has:
+
+- `main_client` — a persistent connection (not pooled)
+- `idle` — MPMC lock-free queue of ready pooled connections
+- `live_count` — number of active pooled connections
+- `max_connections_per_node` — pool size limit
+- On `acquire`:
+    - if `idle` is non-empty → reuse
+    - else if `live_count < max_connections_per_node` → open new connection
+    - else → coroutine sleeps briefly and retries
+
+This ensures high-throughput parallelism for workloads with many concurrent Redis calls.
+
+## Example (basic key routing with cluster.command)
 
 ```cpp
 #include "uvent/Uvent.h"
@@ -40,9 +58,10 @@ task::Awaitable<void> cluster_example()
 {
     RedisClusterConfig cfg;
     cfg.seeds = {
-        {"127.0.0.1", 7000},
-        {"127.0.0.1", 7001},
+        {"127.0.0.1", 7000}
     };
+    cfg.max_redirections         = 8;
+    cfg.max_connections_per_node = 4;
 
     RedisClusterClient cluster{cfg};
 
@@ -50,73 +69,50 @@ task::Awaitable<void> cluster_example()
     if (!dc)
         co_return;
 
-    auto client_res = co_await cluster.get_client_for_key("user:1");
-    if (!client_res)
+    // SET
+    std::array<std::string_view, 2> args_set{"user:42", "Kirill"};
+    auto set_res = co_await cluster.command("SET",
+        std::span<const std::string_view>(args_set));
+
+    if (!set_res)
         co_return;
 
-    auto client = client_res.value();
+    // GET
+    std::array<std::string_view, 1> args_get{"user:42"};
+    auto get_res = co_await cluster.command("GET",
+        std::span<const std::string_view>(args_get));
 
-    co_await client->set("user:1", "Kirill");
-    auto val = co_await client->get("user:1");
-
-    if (val && val->has_value())
-    {
-        usub::ulog::info("user:1 -> {}", **val);
-    }
+    if (get_res && get_res->is_bulk_string())
+        usub::ulog::info("value = {}", get_res->as_string());
 
     co_return;
 }
 ```
 
-## Example (using reflection in Cluster mode)
+## Example (using raw main_client)
 
 ```cpp
-#include "uredis/RedisClusterClient.h"
-#include "uredis/RedisReflect.h"
-
-struct User
-{
-    int64_t id;
-    std::string name;
-    bool active;
-};
-
-task::Awaitable<void> cluster_reflect_example()
+task::Awaitable<void> cluster_raw_client_example()
 {
     RedisClusterConfig cfg;
     cfg.seeds = {
-        {"127.0.0.1", 7000},
-        {"127.0.0.1", 7001},
+        {"127.0.0.1", 7000}
     };
 
     RedisClusterClient cluster{cfg};
-    auto dc = co_await cluster.connect();
-    if (!dc)
-        co_return;
+    co_await cluster.connect();
 
-    std::string key = "user:42";
-
-    auto client_res = co_await cluster.get_client_for_key(key);
+    auto client_res = co_await cluster.get_client_for_key("user:42");
     if (!client_res)
         co_return;
 
-    auto client = client_res.value();
+    auto cli = client_res.value();  // main-client of the slot's node
 
-    User u{.id = 42, .name = "Kirill", .active = true};
+    co_await cli->set("user:42", "Kirill");
+    auto v = co_await cli->get("user:42");
 
-    using namespace usub::uredis::reflect;
-
-    auto hset_res = co_await hset_struct(*client, key, u);
-    if (!hset_res)
-        co_return;
-
-    auto loaded = co_await hget_struct<User>(*client, key);
-    if (loaded && loaded->has_value())
-    {
-        const auto& u2 = **loaded;
-        usub::ulog::info("loaded user: id={} name={} active={}",
-                         u2.id, u2.name, u2.active);
-    }
+    if (v && v->has_value())
+        usub::ulog::info("raw: {}", **v);
 
     co_return;
 }
