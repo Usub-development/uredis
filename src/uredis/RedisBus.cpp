@@ -1,5 +1,7 @@
 #include "uredis/RedisBus.h"
+#ifdef UREDIS_LOGS
 #include <ulog/ulog.h>
+#endif
 
 namespace usub::uredis
 {

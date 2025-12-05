@@ -7,6 +7,11 @@
 #include <string_view>
 #include <variant>
 #include <vector>
+#include <unordered_map>
+#include <map>
+#include <optional>
+#include <utility>
+#include <charconv>
 
 namespace usub::uredis
 {
@@ -27,26 +32,149 @@ namespace usub::uredis
         RedisType type{RedisType::Null};
         std::variant<std::monostate, std::string, int64_t, Array> value;
 
-        bool is_null() const { return this->type == RedisType::Null; }
-        bool is_error() const { return this->type == RedisType::Error; }
-        bool is_simple_string() const { return this->type == RedisType::SimpleString; }
-        bool is_bulk_string() const { return this->type == RedisType::BulkString; }
-        bool is_integer() const { return this->type == RedisType::Integer; }
-        bool is_array() const { return this->type == RedisType::Array; }
+        [[nodiscard]] bool is_null() const { return this->type == RedisType::Null; }
+        [[nodiscard]] bool is_error() const { return this->type == RedisType::Error; }
+        [[nodiscard]] bool is_simple_string() const { return this->type == RedisType::SimpleString; }
+        [[nodiscard]] bool is_bulk_string() const { return this->type == RedisType::BulkString; }
+        [[nodiscard]] bool is_integer() const { return this->type == RedisType::Integer; }
+        [[nodiscard]] bool is_array() const { return this->type == RedisType::Array; }
 
-        const std::string& as_string() const
+        [[nodiscard]] const std::string& as_string() const
         {
             return std::get<std::string>(this->value);
         }
 
-        int64_t as_integer() const
+        [[nodiscard]] int64_t as_integer() const
         {
             return std::get<int64_t>(this->value);
         }
 
-        const Array& as_array() const
+        [[nodiscard]] const Array& as_array() const
         {
             return std::get<Array>(this->value);
+        }
+
+        [[nodiscard]] std::map<std::string, std::string> as_map() const
+        {
+            std::map<std::string, std::string> result;
+
+            if (!this->is_array()) return result;
+            const auto& arr = this->as_array();
+
+            if (arr.size() % 2 != 0) return result;
+
+            for (size_t i = 0; i < arr.size(); i += 2)
+            {
+                const auto& fk = arr[i];
+                const auto& fv = arr[i + 1];
+
+                if (!(fk.is_simple_string() || fk.is_bulk_string())) continue;
+                if (!(fv.is_simple_string() || fv.is_bulk_string())) continue;
+
+                result.emplace(fk.as_string(), fv.as_string());
+            }
+
+            return result;
+        }
+
+        [[nodiscard]] std::unordered_map<std::string, std::string> as_unordered_map() const
+        {
+            std::unordered_map<std::string, std::string> result;
+
+            if (!this->is_array()) return result;
+            const auto& arr = this->as_array();
+
+            if (arr.size() % 2 != 0) return result;
+
+            result.reserve(arr.size() / 2);
+
+            for (size_t i = 0; i < arr.size(); i += 2)
+            {
+                const auto& fk = arr[i];
+                const auto& fv = arr[i + 1];
+
+                if (!(fk.is_simple_string() || fk.is_bulk_string())) continue;
+                if (!(fv.is_simple_string() || fv.is_bulk_string())) continue;
+
+                result.emplace(fk.as_string(), fv.as_string());
+            }
+
+            return result;
+        }
+
+        [[nodiscard]] std::vector<std::string> as_string_array() const
+        {
+            std::vector<std::string> out;
+
+            if (!this->is_array()) return out;
+            const auto& arr = this->as_array();
+
+            out.reserve(arr.size());
+            for (const auto& v : arr)
+            {
+                if (v.is_simple_string() || v.is_bulk_string())
+                    out.push_back(v.as_string());
+            }
+
+            return out;
+        }
+
+        [[nodiscard]] std::vector<std::pair<std::string, std::string>> as_vector_pairs() const
+        {
+            std::vector<std::pair<std::string, std::string>> out;
+
+            if (!this->is_array()) return out;
+            const auto& arr = this->as_array();
+
+            if (arr.size() % 2 != 0) return out;
+
+            out.reserve(arr.size() / 2);
+
+            for (size_t i = 0; i < arr.size(); i += 2)
+            {
+                const auto& fk = arr[i];
+                const auto& fv = arr[i + 1];
+
+                if (!(fk.is_simple_string() || fk.is_bulk_string())) continue;
+                if (!(fv.is_simple_string() || fv.is_bulk_string())) continue;
+
+                out.emplace_back(fk.as_string(), fv.as_string());
+            }
+
+            return out;
+        }
+
+        [[nodiscard]] std::optional<std::string> as_optional_string() const
+        {
+            if (this->is_null())
+                return std::nullopt;
+
+            if (this->is_simple_string() || this->is_bulk_string())
+                return this->as_string();
+
+            return std::nullopt;
+        }
+
+        [[nodiscard]] std::optional<int64_t> as_optional_integer() const
+        {
+            if (this->is_null())
+                return std::nullopt;
+
+            if (this->is_integer())
+                return this->as_integer();
+
+            if (this->is_simple_string() || this->is_bulk_string())
+            {
+                const auto& s = this->as_string();
+                int64_t v{};
+                auto* begin = s.data();
+                auto* end = s.data() + s.size();
+                auto [p, ec] = std::from_chars(begin, end, v);
+                if (ec == std::errc{} && p == end)
+                    return v;
+            }
+
+            return std::nullopt;
         }
     };
 
