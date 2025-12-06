@@ -11,7 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_FLAGS_DEBUG "-g -O0" CACHE STRING "Debug flags" FORCE)
 set(CMAKE_C_FLAGS_DEBUG "-g -O0" CACHE STRING "Debug flags" FORCE)
 
-option(UREDIS_LOGS "Use UREDIS_LOGS" ON)
+option(UREDIS_LOGS "Use UREDIS_LOGS" OFF)
 
 add_compile_definitions(DEV_STAGE=${DEV_STAGE})
 
