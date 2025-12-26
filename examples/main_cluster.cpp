@@ -49,15 +49,16 @@ task::Awaitable<void> example_after_bootstrap(usub::uredis::RedisClusterClient& 
 task::Awaitable<void> run_all()
 {
     usub::uredis::RedisClusterConfig cfg;
-    cfg.seeds = {{"127.0.0.1", 7000}};
+    cfg.seeds = {{"127.0.0.1", 6379}};
     cfg.max_redirections         = 8;
     cfg.max_connections_per_node = 4;
 
     usub::uredis::RedisClusterClient cluster{cfg};
 
     co_await bootstrap(cluster);
-
+    usub::ulog::debug("before example");
     co_await example_after_bootstrap(cluster);
+    usub::ulog::debug("after example");
 
     co_return;
 }

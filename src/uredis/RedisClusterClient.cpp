@@ -7,33 +7,26 @@
 #include <ulog/ulog.h>
 #endif
 
-namespace usub::uredis
-{
+namespace usub::uredis {
     using namespace std::chrono_literals;
 
-    static bool is_cluster_disabled_error(const RedisError& e)
-    {
+    static bool is_cluster_disabled_error(const RedisError &e) {
         if (e.category != RedisErrorCategory::ServerReply)
             return false;
         return e.message.find("cluster support disabled") != std::string::npos;
     }
 
     RedisClusterClient::RedisClusterClient(RedisClusterConfig cfg)
-        : cfg_(std::move(cfg))
-    {
+        : cfg_(std::move(cfg)) {
         this->slot_to_node_.fill(-1);
         if (this->cfg_.max_redirections <= 0)
-        {
             this->cfg_.max_redirections = 5;
-        }
+
         if (this->cfg_.max_connections_per_node == 0)
-        {
             this->cfg_.max_connections_per_node = 1;
-        }
     }
 
-    std::string_view RedisClusterClient::extract_hash_tag(std::string_view key)
-    {
+    std::string_view RedisClusterClient::extract_hash_tag(std::string_view key) {
         auto l = key.find('{');
         if (l == std::string_view::npos) return key;
         auto r = key.find('}', l + 1);
@@ -41,16 +34,13 @@ namespace usub::uredis
         return key.substr(l + 1, r - l - 1);
     }
 
-    std::uint16_t RedisClusterClient::calc_slot(std::string_view key)
-    {
+    std::uint16_t RedisClusterClient::calc_slot(std::string_view key) {
         if (key.empty()) return 0;
 
         std::uint16_t crc = 0;
-        for (unsigned char b : key)
-        {
+        for (unsigned char b: key) {
             crc ^= static_cast<std::uint16_t>(b) << 8;
-            for (int i = 0; i < 8; ++i)
-            {
+            for (int i = 0; i < 8; ++i) {
                 if (crc & 0x8000)
                     crc = static_cast<std::uint16_t>((crc << 1) ^ 0x1021);
                 else
@@ -61,18 +51,15 @@ namespace usub::uredis
     }
 
     std::optional<RedisClusterClient::Redirection>
-    RedisClusterClient::parse_redirection(const std::string& msg)
-    {
+    RedisClusterClient::parse_redirection(const std::string &msg) {
         std::string_view s{msg};
 
-        auto next_token = [](std::string_view& str) -> std::string_view
-        {
+        auto next_token = [](std::string_view &str) -> std::string_view {
             while (!str.empty() && str.front() == ' ')
                 str.remove_prefix(1);
             if (str.empty()) return {};
             std::size_t pos = str.find(' ');
-            if (pos == std::string_view::npos)
-            {
+            if (pos == std::string_view::npos) {
                 std::string_view t = str;
                 str = {};
                 return t;
@@ -99,6 +86,7 @@ namespace usub::uredis
 
         int slot = 0;
         auto [p1, ec1] = std::from_chars(t1.data(), t1.data() + t1.size(), slot);
+        (void) p1;
         if (ec1 != std::errc{}) return std::nullopt;
 
         std::size_t colon = t2.find(':');
@@ -110,6 +98,7 @@ namespace usub::uredis
             t2.data() + colon + 1,
             t2.data() + t2.size(),
             port_i);
+        (void) p2;
         if (ec2 != std::errc{}) return std::nullopt;
         if (port_i <= 0 || port_i > 65535) return std::nullopt;
 
@@ -121,45 +110,29 @@ namespace usub::uredis
         return r;
     }
 
-    RedisResult<int> RedisClusterClient::node_index_for_slot_nolock(int slot)
-    {
-        if (slot < 0 || slot >= 16384)
-        {
-            RedisError err{
-                RedisErrorCategory::Protocol,
-                "RedisClusterClient: invalid slot"
-            };
+    RedisResult<int> RedisClusterClient::node_index_for_slot_nolock(int slot) {
+        if (slot < 0 || slot >= 16384) {
+            RedisError err{RedisErrorCategory::Protocol, "RedisClusterClient: invalid slot"};
             return std::unexpected(err);
         }
 
-        int idx = this->slot_to_node_[slot];
-        if (idx < 0 || static_cast<std::size_t>(idx) >= this->nodes_.size())
-        {
-            RedisError err{
-                RedisErrorCategory::Protocol,
-                "RedisClusterClient: slot mapping is empty"
-            };
+        int idx = this->slot_to_node_[static_cast<std::size_t>(slot)];
+        if (idx < 0 || static_cast<std::size_t>(idx) >= this->nodes_.size()) {
+            RedisError err{RedisErrorCategory::Protocol, "RedisClusterClient: slot mapping is empty"};
             return std::unexpected(err);
         }
 
         return idx;
     }
 
-    RedisResult<int> RedisClusterClient::node_index_for_key_nolock(std::string_view key)
-    {
-        if (this->nodes_.empty())
-        {
-            RedisError err{
-                RedisErrorCategory::Protocol,
-                "RedisClusterClient: no nodes"
-            };
+    RedisResult<int> RedisClusterClient::node_index_for_key_nolock(std::string_view key) {
+        if (this->nodes_.empty()) {
+            RedisError err{RedisErrorCategory::Protocol, "RedisClusterClient: no nodes"};
             return std::unexpected(err);
         }
 
         if (key.empty())
-        {
             return 0;
-        }
 
         std::string key_copy{key};
         std::string_view key_view{key_copy};
@@ -169,29 +142,20 @@ namespace usub::uredis
         return node_index_for_slot_nolock(static_cast<int>(slot));
     }
 
-    task::Awaitable<RedisResult<void>> RedisClusterClient::initial_discovery()
-    {
-        if (this->cfg_.seeds.empty())
-        {
-            RedisError err{
-                RedisErrorCategory::Protocol,
-                "RedisClusterClient: seeds list is empty"
-            };
+    task::Awaitable<RedisResult<void> > RedisClusterClient::initial_discovery() {
+        if (this->cfg_.seeds.empty()) {
+            RedisError err{RedisErrorCategory::Protocol, "RedisClusterClient: seeds list is empty"};
             co_return std::unexpected(err);
         }
 
-        for (const auto& seed : this->cfg_.seeds)
-        {
+        for (const auto &seed: this->cfg_.seeds) {
             auto mc = co_await this->get_or_create_main_client_for_node(seed.host, seed.port);
-            if (!mc)
-            {
+            if (!mc) {
 #ifdef UREDIS_LOGS
-                const auto& e = mc.error();
+                const auto &e = mc.error();
                 usub::ulog::warn(
                     "RedisClusterClient::initial_discovery: seed {}:{} connect failed: {}",
-                    seed.host,
-                    seed.port,
-                    e.message);
+                    seed.host, seed.port, e.message);
 #endif
                 continue;
             }
@@ -204,27 +168,21 @@ namespace usub::uredis
                 "CLUSTER",
                 std::span<const std::string_view>(args_arr.data(), args_arr.size()));
 
-            if (!resp)
-            {
-                const auto& e = resp.error();
+            if (!resp) {
+                const auto &e = resp.error();
 
 #ifdef UREDIS_LOGS
                 usub::ulog::warn(
                     "RedisClusterClient::initial_discovery: CLUSTER SLOTS on {}:{} failed: {}",
-                    seed.host,
-                    seed.port,
-                    e.message);
+                    seed.host, seed.port, e.message);
 #endif
 
-                if (is_cluster_disabled_error(e))
-                {
+                if (is_cluster_disabled_error(e)) {
                     {
                         auto guard = co_await this->mutex_.lock();
 
-                        if (this->nodes_.empty())
-                        {
-                            for (const auto& s : this->cfg_.seeds)
-                            {
+                        if (this->nodes_.empty()) {
+                            for (const auto &s: this->cfg_.seeds) {
                                 RedisConfig ncfg;
                                 ncfg.host = s.host;
                                 ncfg.port = s.port;
@@ -246,23 +204,21 @@ namespace usub::uredis
 #ifdef UREDIS_LOGS
                     usub::ulog::info(
                         "RedisClusterClient::initial_discovery: cluster disabled on {}:{}, fallback to standalone pool mode",
-                        seed.host,
-                        seed.port);
+                        seed.host, seed.port);
 #endif
 
-                    for (const auto& node : this->nodes_)
-                    {
-                        for (std::size_t i = 0; i < this->cfg_.max_connections_per_node; ++i)
-                        {
+                    for (const auto &node: this->nodes_) {
+                        for (std::size_t i = 0; i < this->cfg_.max_connections_per_node; ++i) {
                             auto cli = std::make_shared<RedisClient>(node->cfg);
                             auto c = co_await cli->connect();
                             if (!c)
-                            {
-                                node->live_count.fetch_sub(1, std::memory_order_relaxed);
                                 break;
-                            }
-                            node->idle.try_enqueue(cli);
+
+                            if (!node->idle.try_enqueue(cli))
+                                break;
+
                             node->live_count.fetch_add(1, std::memory_order_relaxed);
+                            node->idle_sem.release();
                         }
                     }
 
@@ -272,32 +228,26 @@ namespace usub::uredis
                 continue;
             }
 
-            const RedisValue& v = *resp;
-            if (!v.is_array())
-            {
+            const RedisValue &v = *resp;
+            if (!v.is_array()) {
 #ifdef UREDIS_LOGS
                 usub::ulog::warn(
                     "RedisClusterClient::initial_discovery: CLUSTER SLOTS reply not array from {}:{}",
-                    seed.host,
-                    seed.port);
+                    seed.host, seed.port);
 #endif
                 continue;
             }
 
-            const auto& slot_ranges = v.as_array();
-
-            {
+            const auto &slot_ranges = v.as_array(); {
                 auto guard = co_await this->mutex_.lock();
 
                 this->slot_to_node_.fill(-1);
 
-                auto ensure_node_locked =
-                    [this](const RedisValue& node_val) -> std::optional<int>
-                {
+                auto ensure_node_locked = [this, &seed](const RedisValue &node_val) -> std::optional<int> {
                     if (!node_val.is_array())
                         return std::nullopt;
 
-                    const auto& arr = node_val.as_array();
+                    const auto &arr = node_val.as_array();
                     if (arr.size() < 2)
                         return std::nullopt;
 
@@ -311,13 +261,14 @@ namespace usub::uredis
                     if (port_i <= 0 || port_i > 65535)
                         return std::nullopt;
 
+                    if (host.empty())
+                        host = seed.host;
+
                     std::uint16_t port = static_cast<std::uint16_t>(port_i);
 
-                    for (std::size_t i = 0; i < this->nodes_.size(); ++i)
-                    {
+                    for (std::size_t i = 0; i < this->nodes_.size(); ++i) {
                         if (this->nodes_[i]->cfg.host == host &&
-                            this->nodes_[i]->cfg.port == port)
-                        {
+                            this->nodes_[i]->cfg.port == port) {
                             return static_cast<int>(i);
                         }
                     }
@@ -336,10 +287,9 @@ namespace usub::uredis
                     return static_cast<int>(this->nodes_.size() - 1);
                 };
 
-                for (const auto& range_val : slot_ranges)
-                {
+                for (const auto &range_val: slot_ranges) {
                     if (!range_val.is_array()) continue;
-                    const auto& range_arr = range_val.as_array();
+                    const auto &range_arr = range_val.as_array();
                     if (range_arr.size() < 3) continue;
 
                     if (!range_arr[0].is_integer() || !range_arr[1].is_integer()) continue;
@@ -355,83 +305,63 @@ namespace usub::uredis
                     if (end > 16383) end = 16383;
 
                     for (int64_t s = start; s <= end; ++s)
-                    {
                         this->slot_to_node_[static_cast<std::size_t>(s)] = master_idx;
-                    }
 
                     for (std::size_t i = 3; i < range_arr.size(); ++i)
-                    {
-                        (void)ensure_node_locked(range_arr[i]);
-                    }
+                        (void) ensure_node_locked(range_arr[i]);
                 }
             }
 
 #ifdef UREDIS_LOGS
             usub::ulog::info(
-                "RedisClusterClient::initial_discovery: CLUSTER SLOTS ok via {}:{}",
-                seed.host,
-                seed.port);
+                "RedisClusterClient::initial_discovery: CLUSTER SLOTS ok via \"{}\":{}",
+                seed.host, seed.port);
 #endif
 
-            for (const auto& node : this->nodes_)
-            {
-                for (std::size_t i = 0; i < this->cfg_.max_connections_per_node; ++i)
-                {
+            for (const auto &node: this->nodes_) {
+                for (std::size_t i = 0; i < this->cfg_.max_connections_per_node; ++i) {
                     auto cli = std::make_shared<RedisClient>(node->cfg);
                     auto c = co_await cli->connect();
                     if (!c)
-                    {
-                        node->live_count.fetch_sub(1, std::memory_order_relaxed);
                         break;
-                    }
-                    node->idle.try_enqueue(cli);
+
+                    if (!node->idle.try_enqueue(cli))
+                        break;
+
                     node->live_count.fetch_add(1, std::memory_order_relaxed);
+                    node->idle_sem.release();
                 }
             }
 
             co_return RedisResult<void>{};
         }
 
-        RedisError err{
-            RedisErrorCategory::Io,
-            "RedisClusterClient: CLUSTER SLOTS failed on all seeds"
-        };
+        RedisError err{RedisErrorCategory::Io, "RedisClusterClient: CLUSTER SLOTS failed on all seeds"};
         co_return std::unexpected(err);
     }
 
-    task::Awaitable<RedisResult<void>> RedisClusterClient::connect()
-    {
+    task::Awaitable<RedisResult<void> > RedisClusterClient::connect() {
         if (this->init_finished_)
-        {
             co_return *this->init_result_;
-        }
 
-        bool we_are_initializer = false;
-
-        {
+        bool we_are_initializer = false; {
             auto guard = co_await this->init_mutex_.lock();
 
             if (this->init_finished_)
-            {
                 co_return *this->init_result_;
-            }
 
-            if (!this->init_started_)
-            {
+            if (!this->init_started_) {
                 this->init_started_ = true;
                 we_are_initializer = true;
             }
         }
 
-        if (!we_are_initializer)
-        {
+        if (!we_are_initializer) {
             co_await this->init_event_.wait();
             co_return *this->init_result_;
         }
 
-        auto res = co_await this->initial_discovery();
-
-        {
+        auto res = co_await this->initial_discovery(); {
             auto guard = co_await this->init_mutex_.lock();
             this->init_result_ = res;
             this->init_finished_ = true;
@@ -441,27 +371,21 @@ namespace usub::uredis
         co_return res;
     }
 
-    task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
+    task::Awaitable<RedisResult<std::shared_ptr<RedisClient> > >
     RedisClusterClient::get_or_create_main_client_for_node(
         std::string_view host,
-        std::uint16_t port)
-    {
-        std::shared_ptr<Node> node;
-
-        {
+        std::uint16_t port) {
+        std::shared_ptr<Node> node; {
             auto guard = co_await this->mutex_.lock();
 
-            for (auto& n : this->nodes_)
-            {
-                if (n->cfg.host == host && n->cfg.port == port)
-                {
+            for (auto &n: this->nodes_) {
+                if (n->cfg.host == host && n->cfg.port == port) {
                     node = n;
                     break;
                 }
             }
 
-            if (!node)
-            {
+            if (!node) {
                 RedisConfig cfg;
                 cfg.host = std::string(host);
                 cfg.port = port;
@@ -477,26 +401,12 @@ namespace usub::uredis
         }
 
         if (node->main_client && node->main_client->connected())
-        {
             co_return node->main_client;
-        }
 
         auto cli = std::make_shared<RedisClient>(node->cfg);
         auto c = co_await cli->connect();
         if (!c)
-        {
-#ifdef UREDIS_LOGS
-            auto& e = c.error();
-            usub::ulog::warn(
-                "RedisClusterClient::get_or_create_main_client_for_node: connect to {}:{} failed: {}",
-                node->cfg.host,
-                node->cfg.port,
-                e.message);
-#endif
-            co_return std::unexpected(c.error());
-        }
-
-        {
+            co_return std::unexpected(c.error()); {
             auto guard = co_await this->mutex_.lock();
             node->main_client = cli;
         }
@@ -504,141 +414,127 @@ namespace usub::uredis
         co_return cli;
     }
 
-    task::Awaitable<RedisResult<RedisClusterClient::PooledClient>>
+    task::Awaitable<RedisResult<RedisClusterClient::PooledClient> >
     RedisClusterClient::acquire_client_for_node_locked(
-        const std::shared_ptr<Node>& node)
-    {
-        for (;;)
-        {
-            std::shared_ptr<RedisClient> client;
+        const std::shared_ptr<Node> &node) {
+        std::shared_ptr<RedisClient> client;
 
-            if (node->idle.try_dequeue(client))
-            {
-                if (client && client->connected())
-                {
-                    PooledClient pc{node, client};
-                    co_return pc;
+        for (;;) {
+            if (node->idle.try_dequeue(client)) {
+                if (!client)
+                    continue;
+
+                if (!client->connected()) {
+                    node->live_count.fetch_sub(1, std::memory_order_relaxed);
+                    node->notify_waiters_if_any();
+                    continue;
                 }
-                node->live_count.fetch_sub(1, std::memory_order_relaxed);
-                continue;
+
+                if (!client->is_idle()) {
+                    node->live_count.fetch_sub(1, std::memory_order_relaxed);
+                    node->notify_waiters_if_any();
+                    continue;
+                }
+
+                co_return PooledClient{node, std::move(client)};
             }
 
-            auto cur = node->live_count.load(std::memory_order_relaxed);
-            if (cur < this->cfg_.max_connections_per_node)
-            {
+            auto cur_live = node->live_count.load(std::memory_order_relaxed);
+            if (cur_live < this->cfg_.max_connections_per_node) {
                 if (node->live_count.compare_exchange_strong(
-                    cur,
-                    cur + 1,
+                    cur_live,
+                    cur_live + 1,
                     std::memory_order_acq_rel,
-                    std::memory_order_relaxed))
-                {
+                    std::memory_order_relaxed)) {
                     auto cli = std::make_shared<RedisClient>(node->cfg);
                     auto c = co_await cli->connect();
-                    if (!c)
-                    {
+                    if (!c) {
                         node->live_count.fetch_sub(1, std::memory_order_relaxed);
-#ifdef UREDIS_LOGS
-                        auto& e = c.error();
-                        usub::ulog::warn(
-                            "RedisClusterClient::acquire_client_for_node_locked: connect to {}:{} failed: {}",
-                            node->cfg.host,
-                            node->cfg.port,
-                            e.message);
-#endif
+                        node->notify_waiters_if_any();
                         co_return std::unexpected(c.error());
                     }
 
-                    PooledClient pc{node, cli};
-                    co_return pc;
+                    co_return PooledClient{node, std::move(cli)};
                 }
+
+                continue;
             }
 
-            co_await usub::uvent::system::this_coroutine::sleep_for(100us);
+            node->waiters.fetch_add(1, std::memory_order_relaxed);
+            co_await node->idle_sem.acquire();
+            node->waiters.fetch_sub(1, std::memory_order_relaxed);
         }
     }
 
     task::Awaitable<void>
-    RedisClusterClient::release_pooled_client(PooledClient&& pc, bool connection_faulty)
-    {
+    RedisClusterClient::release_pooled_client(PooledClient &&pc, bool connection_faulty) {
         auto node = std::move(pc.node);
         auto client = std::move(pc.client);
 
         if (!node || !client)
             co_return;
 
-        if (connection_faulty || !client->connected())
-        {
+        if (connection_faulty || !client->connected()) {
             node->live_count.fetch_sub(1, std::memory_order_relaxed);
+            node->notify_waiters_if_any();
             co_return;
         }
 
-        if (!node->idle.try_enqueue(client))
-        {
+        if (!client->is_idle()) {
             node->live_count.fetch_sub(1, std::memory_order_relaxed);
+            node->notify_waiters_if_any();
+            co_return;
         }
 
+        if (!node->idle.try_enqueue(client)) {
+            node->live_count.fetch_sub(1, std::memory_order_relaxed);
+            node->notify_waiters_if_any();
+            co_return;
+        }
+
+        node->idle_sem.release();
         co_return;
     }
 
-    task::Awaitable<RedisResult<RedisClusterClient::PooledClient>>
-    RedisClusterClient::acquire_client_for_slot(int slot)
-    {
+    task::Awaitable<RedisResult<RedisClusterClient::PooledClient> >
+    RedisClusterClient::acquire_client_for_slot(int slot) {
         auto init = co_await this->connect();
         if (!init)
             co_return std::unexpected(init.error());
 
-        if (slot < 0 || slot >= 16384)
-        {
-            RedisError err{
-                RedisErrorCategory::Protocol,
-                "RedisClusterClient: invalid slot"
-            };
+        if (slot < 0 || slot >= 16384) {
+            RedisError err{RedisErrorCategory::Protocol, "RedisClusterClient: invalid slot"};
             co_return std::unexpected(err);
         }
 
-        std::shared_ptr<Node> node;
-
-        {
+        std::shared_ptr<Node> node; {
             auto guard = co_await this->mutex_.lock();
             auto idx_res = this->node_index_for_slot_nolock(slot);
             if (!idx_res)
-            {
                 co_return std::unexpected(idx_res.error());
-            }
-            int idx = idx_res.value();
 
-            if (idx < 0 || static_cast<std::size_t>(idx) >= this->nodes_.size())
-            {
-                RedisError err{
-                    RedisErrorCategory::Protocol,
-                    "RedisClusterClient: node index out of range in acquire_client_for_slot"
-                };
+            int idx = idx_res.value();
+            if (idx < 0 || static_cast<std::size_t>(idx) >= this->nodes_.size()) {
+                RedisError err{RedisErrorCategory::Protocol, "RedisClusterClient: node index out of range"};
                 co_return std::unexpected(err);
             }
 
-            node = this->nodes_[idx];
+            node = this->nodes_[static_cast<std::size_t>(idx)];
         }
 
         co_return co_await this->acquire_client_for_node_locked(node);
     }
 
-    task::Awaitable<RedisResult<RedisClusterClient::PooledClient>>
-    RedisClusterClient::acquire_client_for_any()
-    {
+    task::Awaitable<RedisResult<RedisClusterClient::PooledClient> >
+    RedisClusterClient::acquire_client_for_any() {
         auto init = co_await this->connect();
         if (!init)
             co_return std::unexpected(init.error());
 
-        std::shared_ptr<Node> node;
-
-        {
+        std::shared_ptr<Node> node; {
             auto guard = co_await this->mutex_.lock();
-            if (this->nodes_.empty())
-            {
-                RedisError err{
-                    RedisErrorCategory::Protocol,
-                    "RedisClusterClient: no nodes for acquire_client_for_any"
-                };
+            if (this->nodes_.empty()) {
+                RedisError err{RedisErrorCategory::Protocol, "RedisClusterClient: no nodes"};
                 co_return std::unexpected(err);
             }
             node = this->nodes_.front();
@@ -647,46 +543,34 @@ namespace usub::uredis
         co_return co_await this->acquire_client_for_node_locked(node);
     }
 
-    task::Awaitable<RedisResult<RedisClusterClient::PooledClient>>
-    RedisClusterClient::acquire_client_for_key(std::string_view key)
-    {
+    task::Awaitable<RedisResult<RedisClusterClient::PooledClient> >
+    RedisClusterClient::acquire_client_for_key(std::string_view key) {
         auto init = co_await this->connect();
         if (!init)
             co_return std::unexpected(init.error());
 
         if (key.empty())
-        {
             co_return co_await this->acquire_client_for_any();
-        }
 
-        std::shared_ptr<Node> node;
-
-        {
+        std::shared_ptr<Node> node; {
             auto guard = co_await this->mutex_.lock();
             auto idx_res = this->node_index_for_key_nolock(key);
             if (!idx_res)
-            {
                 co_return std::unexpected(idx_res.error());
-            }
-            int idx = idx_res.value();
 
-            if (idx < 0 || static_cast<std::size_t>(idx) >= this->nodes_.size())
-            {
-                RedisError err{
-                    RedisErrorCategory::Protocol,
-                    "RedisClusterClient: node index out of range in acquire_client_for_key"
-                };
+            int idx = idx_res.value();
+            if (idx < 0 || static_cast<std::size_t>(idx) >= this->nodes_.size()) {
+                RedisError err{RedisErrorCategory::Protocol, "RedisClusterClient: node index out of range"};
                 co_return std::unexpected(err);
             }
 
-            node = this->nodes_[idx];
+            node = this->nodes_[static_cast<std::size_t>(idx)];
         }
 
         co_return co_await this->acquire_client_for_node_locked(node);
     }
 
-    task::Awaitable<void> RedisClusterClient::apply_moved(const Redirection& r)
-    {
+    task::Awaitable<void> RedisClusterClient::apply_moved(const Redirection &r) {
         if (r.slot < 0 || r.slot >= 16384)
             co_return;
 
@@ -697,82 +581,55 @@ namespace usub::uredis
         auto guard = co_await this->mutex_.lock();
 
         int idx = -1;
-        for (std::size_t i = 0; i < this->nodes_.size(); ++i)
-        {
+        for (std::size_t i = 0; i < this->nodes_.size(); ++i) {
             if (this->nodes_[i]->cfg.host == r.host &&
-                this->nodes_[i]->cfg.port == r.port)
-            {
+                this->nodes_[i]->cfg.port == r.port) {
                 idx = static_cast<int>(i);
                 break;
             }
         }
 
         if (idx >= 0)
-        {
             this->slot_to_node_[static_cast<std::size_t>(r.slot)] = idx;
-        }
 
         co_return;
     }
 
-    task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
-    RedisClusterClient::get_client_for_key(std::string_view key)
-    {
+    task::Awaitable<RedisResult<std::shared_ptr<RedisClient> > >
+    RedisClusterClient::get_client_for_key(std::string_view key) {
         auto init = co_await this->connect();
         if (!init)
             co_return std::unexpected(init.error());
 
         if (key.empty())
-        {
             co_return co_await this->get_any_client();
-        }
 
         std::string host;
-        std::uint16_t port{0};
-
-        {
+        std::uint16_t port{0}; {
             auto guard = co_await this->mutex_.lock();
             auto idx_res = this->node_index_for_key_nolock(key);
             if (!idx_res)
-            {
                 co_return std::unexpected(idx_res.error());
-            }
+
             int idx = idx_res.value();
-
-            if (idx < 0 || static_cast<std::size_t>(idx) >= this->nodes_.size())
-            {
-                RedisError err{
-                    RedisErrorCategory::Protocol,
-                    "RedisClusterClient: node index out of range in get_client_for_key"
-                };
-                co_return std::unexpected(err);
-            }
-
-            host = this->nodes_[idx]->cfg.host;
-            port = this->nodes_[idx]->cfg.port;
+            host = this->nodes_[static_cast<std::size_t>(idx)]->cfg.host;
+            port = this->nodes_[static_cast<std::size_t>(idx)]->cfg.port;
         }
 
         co_return co_await this->get_or_create_main_client_for_node(host, port);
     }
 
-    task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
-    RedisClusterClient::get_any_client()
-    {
+    task::Awaitable<RedisResult<std::shared_ptr<RedisClient> > >
+    RedisClusterClient::get_any_client() {
         auto init = co_await this->connect();
         if (!init)
             co_return std::unexpected(init.error());
 
         std::string host;
-        std::uint16_t port{0};
-
-        {
+        std::uint16_t port{0}; {
             auto guard = co_await this->mutex_.lock();
-            if (this->nodes_.empty())
-            {
-                RedisError err{
-                    RedisErrorCategory::Protocol,
-                    "RedisClusterClient: no nodes for get_any_client"
-                };
+            if (this->nodes_.empty()) {
+                RedisError err{RedisErrorCategory::Protocol, "RedisClusterClient: no nodes"};
                 co_return std::unexpected(err);
             }
 
@@ -783,86 +640,61 @@ namespace usub::uredis
         co_return co_await this->get_or_create_main_client_for_node(host, port);
     }
 
-    task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
-    RedisClusterClient::get_client_for_slot(int slot)
-    {
+    task::Awaitable<RedisResult<std::shared_ptr<RedisClient> > >
+    RedisClusterClient::get_client_for_slot(int slot) {
         auto init = co_await this->connect();
         if (!init)
             co_return std::unexpected(init.error());
 
         std::string host;
-        std::uint16_t port{0};
-
-        {
+        std::uint16_t port{0}; {
             auto guard = co_await this->mutex_.lock();
             auto idx_res = this->node_index_for_slot_nolock(slot);
             if (!idx_res)
-            {
                 co_return std::unexpected(idx_res.error());
-            }
+
             int idx = idx_res.value();
-
-            if (idx < 0 || static_cast<std::size_t>(idx) >= this->nodes_.size())
-            {
-                RedisError err{
-                    RedisErrorCategory::Protocol,
-                    "RedisClusterClient: node index out of range in get_client_for_slot"
-                };
-                co_return std::unexpected(err);
-            }
-
-            host = this->nodes_[idx]->cfg.host;
-            port = this->nodes_[idx]->cfg.port;
+            host = this->nodes_[static_cast<std::size_t>(idx)]->cfg.host;
+            port = this->nodes_[static_cast<std::size_t>(idx)]->cfg.port;
         }
 
         co_return co_await this->get_or_create_main_client_for_node(host, port);
     }
 
-    task::Awaitable<RedisResult<RedisValue>>
+    task::Awaitable<RedisResult<RedisValue> >
     RedisClusterClient::command(
         std::string_view cmd,
-        std::span<const std::string_view> args)
-    {
+        std::span<const std::string_view> args) {
         auto init = co_await this->connect();
         if (!init)
             co_return std::unexpected(init.error());
 
         std::string key_copy;
         if (!args.empty())
-        {
             key_copy.assign(args[0].begin(), args[0].end());
-        }
 
-        for (int attempt = 0; attempt < this->cfg_.max_redirections; ++attempt)
-        {
+        for (int attempt = 0; attempt < this->cfg_.max_redirections; ++attempt) {
             PooledClient pc;
 
-            if (args.empty())
-            {
+            if (args.empty()) {
                 auto ac = co_await this->acquire_client_for_any();
-                if (!ac)
-                    co_return std::unexpected(ac.error());
+                if (!ac) co_return std::unexpected(ac.error());
                 pc = ac.value();
-            }
-            else
-            {
+            } else {
                 auto ac = co_await this->acquire_client_for_key(key_copy);
-                if (!ac)
-                    co_return std::unexpected(ac.error());
+                if (!ac) co_return std::unexpected(ac.error());
                 pc = ac.value();
             }
 
             auto resp = co_await pc.client->command(cmd, args);
-            if (resp)
-            {
+            if (resp) {
                 co_await this->release_pooled_client(std::move(pc), false);
                 co_return resp;
             }
 
             auto err = resp.error();
 
-            if (err.category != RedisErrorCategory::ServerReply)
-            {
+            if (err.category != RedisErrorCategory::ServerReply) {
                 co_await this->release_pooled_client(std::move(pc), true);
                 co_return std::unexpected(err);
             }
@@ -871,61 +703,33 @@ namespace usub::uredis
 
             auto redir_opt = parse_redirection(err.message);
             if (!redir_opt)
-            {
                 co_return std::unexpected(err);
-            }
 
-            const auto& redir = *redir_opt;
+            const auto &redir = *redir_opt;
 
-            if (redir.type == RedirType::Moved)
-            {
-#ifdef UREDIS_LOGS
-                usub::ulog::info(
-                    "RedisClusterClient::command: MOVED slot={} to {}:{} (retry {})",
-                    redir.slot,
-                    redir.host,
-                    redir.port,
-                    attempt + 1);
-#endif
+            if (redir.type == RedirType::Moved) {
                 co_await this->apply_moved(redir);
                 continue;
             }
 
-            if (redir.type == RedirType::Ask)
-            {
-#ifdef UREDIS_LOGS
-                usub::ulog::info(
-                    "RedisClusterClient::command: ASK slot={} to {}:{} (retry {})",
-                    redir.slot,
-                    redir.host,
-                    redir.port,
-                    attempt + 1);
-#endif
+            if (redir.type == RedirType::Ask) {
                 auto mc = co_await this->get_or_create_main_client_for_node(redir.host, redir.port);
-                if (!mc)
-                {
-                    co_return std::unexpected(mc.error());
-                }
+                if (!mc) co_return std::unexpected(mc.error());
                 auto ask_client = mc.value();
 
                 std::span<const std::string_view> no_args;
-                (void)co_await ask_client->command("ASKING", no_args);
+                (void) co_await ask_client->command("ASKING", no_args);
 
                 auto resp2 = co_await ask_client->command(cmd, args);
                 if (resp2)
-                {
                     co_return resp2;
-                }
 
                 auto err2 = resp2.error();
                 auto redir2 = parse_redirection(err2.message);
                 if (!redir2)
-                {
                     co_return std::unexpected(err2);
-                }
 
-                if (redir2->type == RedirType::Moved)
-                {
+                if (redir2->type == RedirType::Moved) {
                     co_await this->apply_moved(*redir2);
                     continue;
                 }
@@ -936,10 +740,7 @@ namespace usub::uredis
             co_return std::unexpected(err);
         }
 
-        RedisError err{
-            RedisErrorCategory::Protocol,
-            "RedisClusterClient: too many redirections"
-        };
+        RedisError err{RedisErrorCategory::Protocol, "RedisClusterClient: too many redirections"};
         co_return std::unexpected(err);
     }
 } // namespace usub::uredis
