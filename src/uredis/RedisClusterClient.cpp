@@ -2,6 +2,8 @@
 
 #include <charconv>
 #include <chrono>
+#include <cctype>
+#include <string>
 
 #ifdef UREDIS_LOGS
 #include <ulog/ulog.h>
@@ -13,7 +15,16 @@ namespace usub::uredis {
     static bool is_cluster_disabled_error(const RedisError &e) {
         if (e.category != RedisErrorCategory::ServerReply)
             return false;
-        return e.message.find("cluster support disabled") != std::string::npos;
+
+        std::string m = e.message;
+        for (auto &c: m)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+        return m.find("cluster support disabled") != std::string::npos
+               || m.find("this instance has cluster support disabled") != std::string::npos
+               || m.find("unknown command") != std::string::npos
+               || m.find("not in cluster mode") != std::string::npos
+               || m.find("cluster is disabled") != std::string::npos;
     }
 
     RedisClusterClient::RedisClusterClient(RedisClusterConfig cfg)
@@ -148,9 +159,14 @@ namespace usub::uredis {
             co_return std::unexpected(err);
         }
 
+        RedisError last_err{RedisErrorCategory::Io, "no attempts"};
+        bool have_last = false;
+
         for (const auto &seed: this->cfg_.seeds) {
             auto mc = co_await this->get_or_create_main_client_for_node(seed.host, seed.port);
             if (!mc) {
+                last_err = mc.error();
+                have_last = true;
 #ifdef UREDIS_LOGS
                 const auto &e = mc.error();
                 usub::ulog::warn(
@@ -170,6 +186,9 @@ namespace usub::uredis {
 
             if (!resp) {
                 const auto &e = resp.error();
+
+                last_err = e;
+                have_last = true;
 
 #ifdef UREDIS_LOGS
                 usub::ulog::warn(
@@ -334,6 +353,14 @@ namespace usub::uredis {
             }
 
             co_return RedisResult<void>{};
+        }
+
+        if (have_last) {
+            RedisError err{
+                last_err.category,
+                std::string("RedisClusterClient: CLUSTER SLOTS failed on all seeds; last=") + last_err.message
+            };
+            co_return std::unexpected(err);
         }
 
         RedisError err{RedisErrorCategory::Io, "RedisClusterClient: CLUSTER SLOTS failed on all seeds"};
