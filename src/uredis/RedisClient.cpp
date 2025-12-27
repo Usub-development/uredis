@@ -133,7 +133,6 @@ namespace usub::uredis {
             co_return std::unexpected(RedisError{RedisErrorCategory::Io, "async_connect failed"});
         }
 
-        socket_->set_timeout_ms(config_.io_timeout_ms);
         connected_ = true;
 
         auto auth = co_await auth_and_select_unlocked();
