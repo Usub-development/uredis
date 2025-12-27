@@ -335,21 +335,44 @@ namespace usub::uredis {
         (void) guard;
 
         if (!connected_) {
-            co_return std::unexpected(RedisError{RedisErrorCategory::Io, "RedisClient not connected"});
+            auto c = co_await connect_unlocked();
+            if (!c) co_return std::unexpected(c.error());
         }
 
-        in_flight_.store(true, std::memory_order_release);
-        struct ResetInFlight {
-            std::atomic_bool &f;
-            ~ResetInFlight() { f.store(false, std::memory_order_release); }
-        } _{in_flight_};
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            in_flight_.store(true, std::memory_order_release);
+            struct ResetInFlight {
+                std::atomic_bool &f;
+                ~ResetInFlight() { f.store(false, std::memory_order_release); }
+            } _{in_flight_};
 
 #ifdef UREDIS_LOGS
-        ulog::debug("RedisClient::command: enter this={} cmd=\"{}\" argc={} socket={}",
-                    ptr_id(this), std::string(cmd), args.size(), ptr_id(socket_.get()));
+            ulog::debug("RedisClient::command: attempt={} this={} cmd=\"{}\" argc={} socket={}",
+                        attempt, ptr_id(this), std::string(cmd), args.size(), ptr_id(socket_.get()));
 #endif
 
-        co_return co_await send_and_read_unlocked(cmd, args);
+            auto r = co_await send_and_read_unlocked(cmd, args);
+            if (r) co_return r;
+
+            const auto &e = r.error();
+
+            if (e.category == RedisErrorCategory::Io && attempt == 0) {
+#ifdef UREDIS_LOGS
+                ulog::warn("RedisClient::command: io error, reconnect+retry: this={} msg=\"{}\"",
+                           ptr_id(this), e.message);
+#endif
+                parser_.reset();
+                hard_close_socket_unlocked();
+
+                auto c = co_await connect_unlocked();
+                if (!c) co_return std::unexpected(c.error());
+                continue;
+            }
+
+            co_return std::unexpected(e);
+        }
+
+        co_return std::unexpected(RedisError{RedisErrorCategory::Io, "retry failed"});
     }
 
     task::Awaitable<RedisResult<std::optional<std::string> > > RedisClient::get(std::string_view key) {
