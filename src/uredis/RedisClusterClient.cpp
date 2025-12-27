@@ -21,10 +21,11 @@ namespace usub::uredis {
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
         return m.find("cluster support disabled") != std::string::npos
-               || m.find("this instance has cluster support disabled") != std::string::npos
-               || m.find("unknown command") != std::string::npos
                || m.find("not in cluster mode") != std::string::npos
-               || m.find("cluster is disabled") != std::string::npos;
+               || m.find("cluster is disabled") != std::string::npos
+               || m.find("unknown command") != std::string::npos
+               || m.find("unknown subcommand") != std::string::npos
+               || (m.find("cluster") != std::string::npos && m.find("unknown") != std::string::npos);
     }
 
     RedisClusterClient::RedisClusterClient(RedisClusterConfig cfg)
@@ -35,6 +36,9 @@ namespace usub::uredis {
 
         if (this->cfg_.max_connections_per_node == 0)
             this->cfg_.max_connections_per_node = 1;
+
+        normalize_auth(cfg_.username);
+        normalize_auth(cfg_.password);
     }
 
     std::string_view RedisClusterClient::extract_hash_tag(std::string_view key) {

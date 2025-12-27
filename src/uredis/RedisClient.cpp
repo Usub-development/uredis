@@ -11,7 +11,7 @@
 namespace usub::uredis {
     using usub::uvent::utils::DynamicBuffer;
 
-    static inline std::uintptr_t ptr_id(const void* p) noexcept {
+    static inline std::uintptr_t ptr_id(const void *p) noexcept {
         return reinterpret_cast<std::uintptr_t>(p);
     }
 
@@ -21,6 +21,8 @@ namespace usub::uredis {
         ulog::debug("RedisClient::ctor: this={} host=\"{}\" port={} db={}",
                     ptr_id(this), config_.host, config_.port, config_.db);
 #endif
+        normalize_auth(config_.username);
+        normalize_auth(config_.password);
     }
 
     RedisClient::~RedisClient() {
@@ -48,13 +50,13 @@ namespace usub::uredis {
         }
     }
 
-    task::Awaitable<RedisResult<void>> RedisClient::connect() {
+    task::Awaitable<RedisResult<void> > RedisClient::connect() {
         auto guard = co_await op_mutex_.lock();
-        (void)guard;
+        (void) guard;
         co_return co_await this->connect_unlocked();
     }
 
-    task::Awaitable<RedisResult<void>> RedisClient::connect_unlocked() {
+    task::Awaitable<RedisResult<void> > RedisClient::connect_unlocked() {
         if (connected_)
             co_return RedisResult<void>{};
 
@@ -93,7 +95,7 @@ namespace usub::uredis {
         co_return RedisResult<void>{};
     }
 
-    task::Awaitable<RedisResult<void>> RedisClient::auth_and_select_unlocked() {
+    task::Awaitable<RedisResult<void> > RedisClient::auth_and_select_unlocked() {
         if (config_.password.has_value()) {
             if (config_.username.has_value()) {
                 std::string u = *config_.username;
@@ -139,8 +141,8 @@ namespace usub::uredis {
 
         auto append_sv = [&out](std::string_view s) {
             out.insert(out.end(),
-                       reinterpret_cast<const uint8_t*>(s.data()),
-                       reinterpret_cast<const uint8_t*>(s.data()) + s.size());
+                       reinterpret_cast<const uint8_t *>(s.data()),
+                       reinterpret_cast<const uint8_t *>(s.data()) + s.size());
         };
 
         auto append_bulk = [&](std::string_view s) {
@@ -158,13 +160,13 @@ namespace usub::uredis {
         append_sv("\r\n");
 
         append_bulk(cmd);
-        for (auto a : args)
+        for (auto a: args)
             append_bulk(a);
 
         return out;
     }
 
-    task::Awaitable<RedisResult<RedisValue>> RedisClient::read_one_reply_unlocked() {
+    task::Awaitable<RedisResult<RedisValue> > RedisClient::read_one_reply_unlocked() {
         if (!socket_)
             co_return std::unexpected(RedisError{RedisErrorCategory::Io, "socket is null"});
 
@@ -196,14 +198,13 @@ namespace usub::uredis {
                 co_return std::unexpected(RedisError{RedisErrorCategory::Io, "connection closed"});
             }
 
-            parser_.feed(reinterpret_cast<const uint8_t*>(buf.data()), static_cast<std::size_t>(rdsz));
+            parser_.feed(reinterpret_cast<const uint8_t *>(buf.data()), static_cast<std::size_t>(rdsz));
         }
     }
 
-    task::Awaitable<RedisResult<RedisValue>> RedisClient::send_and_read_unlocked(
+    task::Awaitable<RedisResult<RedisValue> > RedisClient::send_and_read_unlocked(
         std::string_view cmd,
         std::span<const std::string_view> args) {
-
         if (!connected_ || closing_)
             co_return std::unexpected(RedisError{RedisErrorCategory::Io, "not connected"});
 
@@ -228,12 +229,11 @@ namespace usub::uredis {
         co_return co_await read_one_reply_unlocked();
     }
 
-    task::Awaitable<RedisResult<RedisValue>> RedisClient::command(
+    task::Awaitable<RedisResult<RedisValue> > RedisClient::command(
         std::string_view cmd,
         std::span<const std::string_view> args) {
-
         auto guard = co_await op_mutex_.lock();
-        (void)guard;
+        (void) guard;
 
         if (!connected_) {
             co_return std::unexpected(RedisError{RedisErrorCategory::Io, "RedisClient not connected"});
@@ -241,7 +241,7 @@ namespace usub::uredis {
 
         in_flight_.store(true, std::memory_order_release);
         struct ResetInFlight {
-            std::atomic_bool& f;
+            std::atomic_bool &f;
             ~ResetInFlight() { f.store(false, std::memory_order_release); }
         } _{in_flight_};
 
@@ -253,26 +253,26 @@ namespace usub::uredis {
         co_return co_await send_and_read_unlocked(cmd, args);
     }
 
-    task::Awaitable<RedisResult<std::optional<std::string>>> RedisClient::get(std::string_view key) {
+    task::Awaitable<RedisResult<std::optional<std::string> > > RedisClient::get(std::string_view key) {
         std::string_view a[1] = {key};
         auto r = co_await command("GET", std::span<const std::string_view>(a, 1));
         if (!r) co_return std::unexpected(r.error());
 
-        const RedisValue& v = *r;
+        const RedisValue &v = *r;
         if (v.type == RedisType::Null) co_return std::optional<std::string>{};
         if (v.type != RedisType::BulkString && v.type != RedisType::SimpleString)
             co_return std::unexpected(RedisError{RedisErrorCategory::Protocol, "GET: unexpected type"});
         co_return std::optional<std::string>{v.as_string()};
     }
 
-    task::Awaitable<RedisResult<void>> RedisClient::set(std::string_view key, std::string_view value) {
+    task::Awaitable<RedisResult<void> > RedisClient::set(std::string_view key, std::string_view value) {
         std::string_view a[2] = {key, value};
         auto r = co_await command("SET", std::span<const std::string_view>(a, 2));
         if (!r) co_return std::unexpected(r.error());
         co_return RedisResult<void>{};
     }
 
-    task::Awaitable<RedisResult<void>> RedisClient::setex(std::string_view key, int ttl_sec, std::string_view value) {
+    task::Awaitable<RedisResult<void> > RedisClient::setex(std::string_view key, int ttl_sec, std::string_view value) {
         std::string ttl = std::to_string(ttl_sec);
         std::string_view a[3] = {key, ttl, value};
         auto r = co_await command("SETEX", std::span<const std::string_view>(a, 3));
@@ -280,7 +280,7 @@ namespace usub::uredis {
         co_return RedisResult<void>{};
     }
 
-    task::Awaitable<RedisResult<int64_t>> RedisClient::del(std::span<const std::string_view> keys) {
+    task::Awaitable<RedisResult<int64_t> > RedisClient::del(std::span<const std::string_view> keys) {
         if (keys.empty()) co_return int64_t{0};
         auto r = co_await command("DEL", keys);
         if (!r) co_return std::unexpected(r.error());
@@ -289,7 +289,7 @@ namespace usub::uredis {
         co_return r->as_integer();
     }
 
-    task::Awaitable<RedisResult<int64_t>> RedisClient::incrby(std::string_view key, int64_t delta) {
+    task::Awaitable<RedisResult<int64_t> > RedisClient::incrby(std::string_view key, int64_t delta) {
         std::string d = std::to_string(delta);
         std::string_view a[2] = {key, d};
         auto r = co_await command("INCRBY", std::span<const std::string_view>(a, 2));
@@ -299,7 +299,8 @@ namespace usub::uredis {
         co_return r->as_integer();
     }
 
-    task::Awaitable<RedisResult<int64_t>> RedisClient::hset(std::string_view key, std::string_view field, std::string_view value) {
+    task::Awaitable<RedisResult<int64_t> > RedisClient::hset(std::string_view key, std::string_view field,
+                                                             std::string_view value) {
         std::string_view a[3] = {key, field, value};
         auto r = co_await command("HSET", std::span<const std::string_view>(a, 3));
         if (!r) co_return std::unexpected(r.error());
@@ -308,29 +309,31 @@ namespace usub::uredis {
         co_return r->as_integer();
     }
 
-    task::Awaitable<RedisResult<std::optional<std::string>>> RedisClient::hget(std::string_view key, std::string_view field) {
+    task::Awaitable<RedisResult<std::optional<std::string> > > RedisClient::hget(
+        std::string_view key, std::string_view field) {
         std::string_view a[2] = {key, field};
         auto r = co_await command("HGET", std::span<const std::string_view>(a, 2));
         if (!r) co_return std::unexpected(r.error());
 
-        const RedisValue& v = *r;
+        const RedisValue &v = *r;
         if (v.type == RedisType::Null) co_return std::optional<std::string>{};
         if (v.type != RedisType::BulkString && v.type != RedisType::SimpleString)
             co_return std::unexpected(RedisError{RedisErrorCategory::Protocol, "HGET: unexpected type"});
         co_return std::optional<std::string>{v.as_string()};
     }
 
-    task::Awaitable<RedisResult<std::unordered_map<std::string, std::string>>> RedisClient::hgetall(std::string_view key) {
+    task::Awaitable<RedisResult<std::unordered_map<std::string, std::string> > > RedisClient::hgetall(
+        std::string_view key) {
         std::string_view a[1] = {key};
         auto r = co_await command("HGETALL", std::span<const std::string_view>(a, 1));
         if (!r) co_return std::unexpected(r.error());
 
-        const RedisValue& v = *r;
+        const RedisValue &v = *r;
         if (v.type == RedisType::Null) co_return std::unordered_map<std::string, std::string>{};
         if (v.type != RedisType::Array)
             co_return std::unexpected(RedisError{RedisErrorCategory::Protocol, "HGETALL: unexpected type"});
 
-        const auto& arr = v.as_array();
+        const auto &arr = v.as_array();
         if ((arr.size() & 1u) != 0u)
             co_return std::unexpected(RedisError{RedisErrorCategory::Protocol, "HGETALL: odd array size"});
 
@@ -338,8 +341,8 @@ namespace usub::uredis {
         out.reserve(arr.size() / 2);
 
         for (size_t i = 0; i < arr.size(); i += 2) {
-            const auto& f = arr[i];
-            const auto& val = arr[i + 1];
+            const auto &f = arr[i];
+            const auto &val = arr[i + 1];
             if (!f.is_bulk_string() && !f.is_simple_string()) continue;
             if (!val.is_bulk_string() && !val.is_simple_string()) continue;
             out.emplace(f.as_string(), val.as_string());
@@ -348,13 +351,14 @@ namespace usub::uredis {
         co_return out;
     }
 
-    task::Awaitable<RedisResult<int64_t>> RedisClient::sadd(std::string_view key, std::span<const std::string_view> members) {
+    task::Awaitable<RedisResult<int64_t> > RedisClient::sadd(std::string_view key,
+                                                             std::span<const std::string_view> members) {
         if (members.empty()) co_return int64_t{0};
 
         std::vector<std::string_view> a;
         a.reserve(1 + members.size());
         a.push_back(key);
-        for (auto m : members) a.push_back(m);
+        for (auto m: members) a.push_back(m);
 
         auto r = co_await command("SADD", std::span<const std::string_view>(a.data(), a.size()));
         if (!r) co_return std::unexpected(r.error());
@@ -363,13 +367,14 @@ namespace usub::uredis {
         co_return r->as_integer();
     }
 
-    task::Awaitable<RedisResult<int64_t>> RedisClient::srem(std::string_view key, std::span<const std::string_view> members) {
+    task::Awaitable<RedisResult<int64_t> > RedisClient::srem(std::string_view key,
+                                                             std::span<const std::string_view> members) {
         if (members.empty()) co_return int64_t{0};
 
         std::vector<std::string_view> a;
         a.reserve(1 + members.size());
         a.push_back(key);
-        for (auto m : members) a.push_back(m);
+        for (auto m: members) a.push_back(m);
 
         auto r = co_await command("SREM", std::span<const std::string_view>(a.data(), a.size()));
         if (!r) co_return std::unexpected(r.error());
@@ -378,21 +383,21 @@ namespace usub::uredis {
         co_return r->as_integer();
     }
 
-    task::Awaitable<RedisResult<std::vector<std::string>>> RedisClient::smembers(std::string_view key) {
+    task::Awaitable<RedisResult<std::vector<std::string> > > RedisClient::smembers(std::string_view key) {
         std::string_view a[1] = {key};
         auto r = co_await command("SMEMBERS", std::span<const std::string_view>(a, 1));
         if (!r) co_return std::unexpected(r.error());
 
-        const RedisValue& v = *r;
+        const RedisValue &v = *r;
         if (v.type == RedisType::Null) co_return std::vector<std::string>{};
         if (v.type != RedisType::Array)
             co_return std::unexpected(RedisError{RedisErrorCategory::Protocol, "SMEMBERS: unexpected type"});
 
-        const auto& arr = v.as_array();
+        const auto &arr = v.as_array();
         std::vector<std::string> out;
         out.reserve(arr.size());
 
-        for (const auto& it : arr) {
+        for (const auto &it: arr) {
             if (!it.is_bulk_string() && !it.is_simple_string()) continue;
             out.push_back(it.as_string());
         }
@@ -400,13 +405,14 @@ namespace usub::uredis {
         co_return out;
     }
 
-    task::Awaitable<RedisResult<int64_t>> RedisClient::lpush(std::string_view key, std::span<const std::string_view> values) {
+    task::Awaitable<RedisResult<int64_t> > RedisClient::lpush(std::string_view key,
+                                                              std::span<const std::string_view> values) {
         if (values.empty()) co_return int64_t{0};
 
         std::vector<std::string_view> a;
         a.reserve(1 + values.size());
         a.push_back(key);
-        for (auto v : values) a.push_back(v);
+        for (auto v: values) a.push_back(v);
 
         auto r = co_await command("LPUSH", std::span<const std::string_view>(a.data(), a.size()));
         if (!r) co_return std::unexpected(r.error());
@@ -415,7 +421,8 @@ namespace usub::uredis {
         co_return r->as_integer();
     }
 
-    task::Awaitable<RedisResult<std::vector<std::string>>> RedisClient::lrange(std::string_view key, int64_t start, int64_t stop) {
+    task::Awaitable<RedisResult<std::vector<std::string> > > RedisClient::lrange(
+        std::string_view key, int64_t start, int64_t stop) {
         std::string s1 = std::to_string(start);
         std::string s2 = std::to_string(stop);
         std::string_view a[3] = {key, s1, s2};
@@ -423,15 +430,15 @@ namespace usub::uredis {
         auto r = co_await command("LRANGE", std::span<const std::string_view>(a, 3));
         if (!r) co_return std::unexpected(r.error());
 
-        const RedisValue& v = *r;
+        const RedisValue &v = *r;
         if (v.type != RedisType::Array)
             co_return std::unexpected(RedisError{RedisErrorCategory::Protocol, "LRANGE: unexpected type"});
 
-        const auto& arr = v.as_array();
+        const auto &arr = v.as_array();
         std::vector<std::string> out;
         out.reserve(arr.size());
 
-        for (const auto& it : arr) {
+        for (const auto &it: arr) {
             if (!it.is_bulk_string() && !it.is_simple_string()) continue;
             out.push_back(it.as_string());
         }
@@ -439,10 +446,9 @@ namespace usub::uredis {
         co_return out;
     }
 
-    task::Awaitable<RedisResult<int64_t>> RedisClient::zadd(
+    task::Awaitable<RedisResult<int64_t> > RedisClient::zadd(
         std::string_view key,
         std::span<const std::pair<std::string, double>> members) {
-
         if (members.empty()) co_return int64_t{0};
 
         std::vector<std::string> scores;
@@ -452,7 +458,7 @@ namespace usub::uredis {
         a.reserve(1 + members.size() * 2);
         a.push_back(key);
 
-        for (const auto& m : members) {
+        for (const auto &m: members) {
             scores.push_back(std::to_string(m.second));
             a.push_back(scores.back());
             a.push_back(m.first);
@@ -465,9 +471,8 @@ namespace usub::uredis {
         co_return r->as_integer();
     }
 
-    task::Awaitable<RedisResult<std::vector<std::pair<std::string, double>>>> RedisClient::zrange_with_scores(
+    task::Awaitable<RedisResult<std::vector<std::pair<std::string, double> > > > RedisClient::zrange_with_scores(
         std::string_view key, int64_t start, int64_t stop) {
-
         std::string s1 = std::to_string(start);
         std::string s2 = std::to_string(stop);
         std::string with = "WITHSCORES";
@@ -476,20 +481,20 @@ namespace usub::uredis {
         auto r = co_await command("ZRANGE", std::span<const std::string_view>(a, 4));
         if (!r) co_return std::unexpected(r.error());
 
-        const RedisValue& v = *r;
+        const RedisValue &v = *r;
         if (v.type != RedisType::Array)
             co_return std::unexpected(RedisError{RedisErrorCategory::Protocol, "ZRANGE: unexpected type"});
 
-        const auto& arr = v.as_array();
+        const auto &arr = v.as_array();
         if ((arr.size() & 1u) != 0u)
             co_return std::unexpected(RedisError{RedisErrorCategory::Protocol, "ZRANGE: odd array size"});
 
-        std::vector<std::pair<std::string, double>> out;
+        std::vector<std::pair<std::string, double> > out;
         out.reserve(arr.size() / 2);
 
         for (size_t i = 0; i < arr.size(); i += 2) {
-            const auto& m = arr[i];
-            const auto& sc = arr[i + 1];
+            const auto &m = arr[i];
+            const auto &sc = arr[i + 1];
             if (!m.is_bulk_string() && !m.is_simple_string()) continue;
             if (!sc.is_bulk_string() && !sc.is_simple_string()) continue;
             out.emplace_back(m.as_string(), std::stod(sc.as_string()));
