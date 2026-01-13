@@ -17,20 +17,6 @@ namespace usub::uredis {
         return reinterpret_cast<std::uintptr_t>(p);
     }
 
-    static inline void trim_inplace(std::string &s) {
-        auto ws = [](unsigned char c) {
-            return c == ' ' || c == '\t' || c == '\r' || c == '\n';
-        };
-
-        std::size_t l = 0;
-        std::size_t r = s.size();
-        while (l < r && ws(static_cast<unsigned char>(s[l]))) ++l;
-        while (r > l && ws(static_cast<unsigned char>(s[r - 1]))) --r;
-
-        if (l == 0 && r == s.size()) return;
-        s = s.substr(l, r - l);
-    }
-
     static inline std::array<unsigned, 4> tail4(const std::string &s) {
         const auto n = s.size();
         auto b = [&](std::size_t i) -> unsigned {
@@ -68,16 +54,18 @@ namespace usub::uredis {
         ulog::debug("RedisClient::dtor: this={} connected={} closing={} socket={}",
                     ptr_id(this), connected_, closing_, ptr_id(socket_.get()));
 #endif
-        this->hard_close_socket_unlocked();
+        hard_close_socket_unlocked();
     }
 
     bool RedisClient::is_idle() const noexcept {
-        return connected_ && !closing_ && !in_flight_.load(std::memory_order_acquire);
+        return connected_ && !closing_;
     }
 
     void RedisClient::hard_close_socket_unlocked() noexcept {
         closing_ = true;
         connected_ = false;
+
+        parser_.reset();
 
         auto sock = socket_;
         if (sock) {
@@ -86,70 +74,69 @@ namespace usub::uredis {
 #endif
             sock->shutdown();
         }
+        socket_.reset();
     }
 
     task::Awaitable<RedisResult<void> > RedisClient::connect() {
-        auto guard = co_await op_mutex_.lock();
-        (void) guard;
-        co_return co_await this->connect_unlocked();
+        co_return co_await connect_unlocked();
     }
 
     task::Awaitable<RedisResult<void> > RedisClient::connect_unlocked() {
-        if (connected_)
+        if (connected_ && socket_ && !closing_)
             co_return RedisResult<void>{};
-
-        closing_ = false;
-
-        if (!socket_)
-            socket_ = std::make_shared<net::TCPClientSocket>();
 
         normalize_auth(config_.username);
         normalize_auth(config_.password);
 
-        std::string port_str = std::to_string(config_.port);
-
-#ifdef UREDIS_LOGS
-        ulog::info("RedisClient::connect: this={} host=\"{}\" port={} db={} socket={} user_set={} pass_set={}",
-                   ptr_id(this), config_.host, config_.port, config_.db, ptr_id(socket_.get()),
-                   config_.username.has_value(), config_.password.has_value());
-
-        if (config_.password) {
-            const auto &p = *config_.password;
-            auto t = tail4(p);
-            ulog::info("RedisClient::password-meta: len={} tail=[{:02x} {:02x} {:02x} {:02x}]",
-                       p.size(), t[0], t[1], t[2], t[3]);
-        }
-#endif
-
-        auto rc = co_await socket_->async_connect(config_.host.c_str(), port_str.c_str());
-        if (rc.has_value()) {
-#ifdef UREDIS_LOGS
-            ulog::error("RedisClient::connect: async_connect failed this={} host=\"{}\" port={}",
-                        ptr_id(this), config_.host, config_.port);
-#endif
-            socket_.reset();
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            closing_ = false;
             connected_ = false;
-            closing_ = true;
-            co_return std::unexpected(RedisError{RedisErrorCategory::Io, "async_connect failed"});
-        }
+            parser_.reset();
+            socket_.reset();
+            socket_ = std::make_shared<net::TCPClientSocket>();
 
-        connected_ = true;
-
-        auto auth = co_await auth_and_select_unlocked();
-        if (!auth) {
-#ifdef UREDIS_LOGS
-            ulog::error(R"(RedisClient::connect: AUTH/SELECT failed this={} host="{}" port={} category={} msg="{}")",
-                        ptr_id(this), config_.host, config_.port,
-                        (int) auth.error().category, auth.error().message);
-#endif
-            this->hard_close_socket_unlocked();
-            co_return std::unexpected(auth.error());
-        }
+            const std::string port_str = std::to_string(config_.port);
 
 #ifdef UREDIS_LOGS
-        ulog::info("RedisClient::connect: OK this={} socket={}", ptr_id(this), ptr_id(socket_.get()));
+            ulog::info(
+                "RedisClient::connect: attempt={} this={} host=\"{}\" port={} db={} socket={} user_set={} pass_set={}",
+                attempt, ptr_id(this), config_.host, config_.port, config_.db, ptr_id(socket_.get()),
+                config_.username.has_value(), config_.password.has_value());
 #endif
-        co_return RedisResult<void>{};
+
+            auto rc = co_await socket_->async_connect(config_.host.c_str(), port_str.c_str());
+            if (rc.has_value()) {
+#ifdef UREDIS_LOGS
+                ulog::error("RedisClient::connect: async_connect failed this={} host=\"{}\" port={} attempt={}",
+                            ptr_id(this), config_.host, config_.port, attempt);
+#endif
+                hard_close_socket_unlocked();
+                if (attempt == 0) continue;
+                co_return std::unexpected(RedisError{RedisErrorCategory::Io, "async_connect failed"});
+            }
+
+            connected_ = true;
+
+            auto auth = co_await auth_and_select_unlocked();
+            if (!auth) {
+#ifdef UREDIS_LOGS
+                ulog::error(
+                    R"(RedisClient::connect: AUTH/SELECT failed this={} host="{}" port={} category={} msg="{}")",
+                    ptr_id(this), config_.host, config_.port,
+                    (int) auth.error().category, auth.error().message);
+#endif
+                hard_close_socket_unlocked();
+                if (attempt == 0) continue;
+                co_return std::unexpected(auth.error());
+            }
+
+#ifdef UREDIS_LOGS
+            ulog::info("RedisClient::connect: OK this={} socket={}", ptr_id(this), ptr_id(socket_.get()));
+#endif
+            co_return RedisResult<void>{};
+        }
+
+        co_return std::unexpected(RedisError{RedisErrorCategory::Io, "connect retry failed"});
     }
 
     task::Awaitable<RedisResult<void> > RedisClient::auth_and_select_unlocked() {
@@ -162,87 +149,41 @@ namespace usub::uredis {
                 std::string p = *config_.password;
                 std::string_view args_arr[2] = {u, p};
 
-#ifdef UREDIS_LOGS
-                ulog::debug("RedisClient::connect: AUTH user=\"{}\" pass_len={}", u, p.size());
-#endif
-
                 auto r = co_await send_and_read_unlocked("AUTH", std::span<const std::string_view>(args_arr, 2));
-                if (!r) {
-#ifdef UREDIS_LOGS
-                    ulog::error("RedisClient::AUTH failed: host=\"{}\" port={} category={} msg=\"{}\"",
-                                config_.host, config_.port, (int) r.error().category, r.error().message);
-#endif
-                    co_return std::unexpected(r.error());
-                }
-
-#ifdef UREDIS_LOGS
-                ulog::info("RedisClient::AUTH OK: host=\"{}\" port={}", config_.host, config_.port);
-#endif
+                if (!r) co_return std::unexpected(r.error());
             } else {
                 std::string p = *config_.password;
                 std::string_view args_arr[1] = {p};
 
-#ifdef UREDIS_LOGS
-                ulog::debug("RedisClient::connect: AUTH (no user) pass_len={}", p.size());
-#endif
-
                 auto r = co_await send_and_read_unlocked("AUTH", std::span<const std::string_view>(args_arr, 1));
-                if (!r) {
-#ifdef UREDIS_LOGS
-                    ulog::error(R"(RedisClient::AUTH failed: host="{}" port={} category={} msg="{}")",
-                                config_.host, config_.port, (int) r.error().category, r.error().message);
-#endif
-                    co_return std::unexpected(r.error());
-                }
-
-#ifdef UREDIS_LOGS
-                ulog::info("RedisClient::AUTH OK: host=\"{}\" port={}", config_.host, config_.port);
-#endif
+                if (!r) co_return std::unexpected(r.error());
             }
-        } else {
-#ifdef UREDIS_LOGS
-            ulog::debug("RedisClient::connect: AUTH skipped (password is null)");
-#endif
         }
 
         if (config_.db != 0) {
             std::string db = std::to_string(config_.db);
             std::string_view args_arr[1] = {db};
 
-#ifdef UREDIS_LOGS
-            ulog::debug("RedisClient::connect: SELECT {}", config_.db);
-#endif
-
             auto r = co_await send_and_read_unlocked("SELECT", std::span<const std::string_view>(args_arr, 1));
-            if (!r) {
-#ifdef UREDIS_LOGS
-                ulog::error(R"(RedisClient::SELECT failed: host="{}" port={} category={} msg="{}")",
-                            config_.host, config_.port, (int) r.error().category, r.error().message);
-#endif
-                co_return std::unexpected(r.error());
-            }
-
-#ifdef UREDIS_LOGS
-            ulog::info("RedisClient::SELECT OK: db={} host=\"{}\" port={}", config_.db, config_.host, config_.port);
-#endif
+            if (!r) co_return std::unexpected(r.error());
         }
 
         co_return RedisResult<void>{};
     }
 
-    std::vector<uint8_t> RedisClient::encode_command(std::string_view cmd, std::span<const std::string_view> args) {
-        std::vector<uint8_t> out;
+    std::vector<std::uint8_t>
+    RedisClient::encode_command(std::string_view cmd, std::span<const std::string_view> args) {
+        std::vector<std::uint8_t> out;
 
         auto append_sv = [&out](std::string_view s) {
             out.insert(out.end(),
-                       reinterpret_cast<const uint8_t *>(s.data()),
-                       reinterpret_cast<const uint8_t *>(s.data()) + s.size());
+                       reinterpret_cast<const std::uint8_t *>(s.data()),
+                       reinterpret_cast<const std::uint8_t *>(s.data()) + s.size());
         };
 
         auto append_bulk = [&](std::string_view s) {
-            std::string len = std::to_string(s.size());
             append_sv("$");
-            append_sv(len);
+            append_sv(std::to_string(s.size()));
             append_sv("\r\n");
             append_sv(s);
             append_sv("\r\n");
@@ -254,8 +195,7 @@ namespace usub::uredis {
         append_sv("\r\n");
 
         append_bulk(cmd);
-        for (auto a: args)
-            append_bulk(a);
+        for (auto a: args) append_bulk(a);
 
         return out;
     }
@@ -270,9 +210,8 @@ namespace usub::uredis {
         for (;;) {
             if (auto v = parser_.next()) {
                 RedisValue out = std::move(*v);
-                if (out.type == RedisType::Error) {
+                if (out.type == RedisType::Error)
                     co_return std::unexpected(RedisError{RedisErrorCategory::ServerReply, out.as_string()});
-                }
                 co_return out;
             }
 
@@ -288,11 +227,11 @@ namespace usub::uredis {
 #endif
 
             if (rdsz <= 0) {
-                this->hard_close_socket_unlocked();
+                hard_close_socket_unlocked();
                 co_return std::unexpected(RedisError{RedisErrorCategory::Io, "connection closed"});
             }
 
-            parser_.feed(reinterpret_cast<const uint8_t *>(buf.data()), static_cast<std::size_t>(rdsz));
+            parser_.feed(reinterpret_cast<const std::uint8_t *>(buf.data()), static_cast<std::size_t>(rdsz));
         }
     }
 
@@ -301,11 +240,10 @@ namespace usub::uredis {
         std::span<const std::string_view> args) {
         if (!connected_ || closing_)
             co_return std::unexpected(RedisError{RedisErrorCategory::Io, "not connected"});
-
         if (!socket_)
             co_return std::unexpected(RedisError{RedisErrorCategory::Io, "socket is null"});
 
-        std::vector<uint8_t> frame = encode_command(cmd, args);
+        std::vector<std::uint8_t> frame = encode_command(cmd, args);
 
         std::size_t off = 0;
         while (off < frame.size()) {
@@ -318,7 +256,7 @@ namespace usub::uredis {
 #endif
 
             if (n <= 0) {
-                this->hard_close_socket_unlocked();
+                hard_close_socket_unlocked();
                 co_return std::unexpected(RedisError{RedisErrorCategory::Io, "write failed"});
             }
             off += static_cast<std::size_t>(n);
@@ -330,21 +268,14 @@ namespace usub::uredis {
     task::Awaitable<RedisResult<RedisValue> > RedisClient::command(
         std::string_view cmd,
         std::span<const std::string_view> args) {
-        auto guard = co_await op_mutex_.lock();
-        (void) guard;
+        bool expected = false;
 
-        if (!connected_) {
+        if (!connected_ || closing_ || !socket_) {
             auto c = co_await connect_unlocked();
             if (!c) co_return std::unexpected(c.error());
         }
 
         for (int attempt = 0; attempt < 2; ++attempt) {
-            in_flight_.store(true, std::memory_order_release);
-            struct ResetInFlight {
-                std::atomic_bool &f;
-                ~ResetInFlight() { f.store(false, std::memory_order_release); }
-            } _{in_flight_};
-
 #ifdef UREDIS_LOGS
             ulog::debug("RedisClient::command: attempt={} this={} cmd=\"{}\" argc={} socket={}",
                         attempt, ptr_id(this), std::string(cmd), args.size(), ptr_id(socket_.get()));
@@ -360,7 +291,6 @@ namespace usub::uredis {
                 ulog::warn("RedisClient::command: io error, reconnect+retry: this={} msg=\"{}\"",
                            ptr_id(this), e.message);
 #endif
-                parser_.reset();
                 hard_close_socket_unlocked();
 
                 auto c = co_await connect_unlocked();

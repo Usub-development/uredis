@@ -14,7 +14,6 @@
 #include <array>
 
 #include "uvent/Uvent.h"
-#include "uvent/sync/AsyncMutex.h"
 #include "uvent/utils/buffer/DynamicBuffer.h"
 
 #include "uredis/RedisTypes.h"
@@ -22,7 +21,6 @@
 
 namespace usub::uredis {
     namespace net = usub::uvent::net;
-    namespace sync = usub::uvent::sync;
     namespace task = usub::uvent::task;
 
     struct RedisConfig {
@@ -45,9 +43,9 @@ namespace usub::uredis {
 
         task::Awaitable<RedisResult<void> > connect();
 
-        bool connected() const noexcept { return connected_; }
+        [[nodiscard]] bool connected() const noexcept { return connected_; }
 
-        bool is_idle() const noexcept;
+        [[nodiscard]] bool is_idle() const noexcept;
 
         task::Awaitable<RedisResult<RedisValue> > command(
             std::string_view cmd,
@@ -105,13 +103,9 @@ namespace usub::uredis {
         bool connected_{false};
         bool closing_{false};
 
-        sync::AsyncMutex op_mutex_;
-
-        std::atomic_bool in_flight_{false};
-
         RespParser parser_{};
 
-        static std::vector<uint8_t> encode_command(std::string_view cmd, std::span<const std::string_view> args);
+        static std::vector<std::uint8_t> encode_command(std::string_view cmd, std::span<const std::string_view> args);
 
         void hard_close_socket_unlocked() noexcept;
 
@@ -129,6 +123,6 @@ namespace usub::uredis {
     static inline void normalize_auth(std::optional<std::string> &s) {
         if (s && s->empty()) s.reset();
     }
-}
+} // namespace usub::uredis
 
 #endif // REDISCLIENT_H

@@ -1,0 +1,53 @@
+version: "3.9"
+
+services:
+  keydb:
+    image: eqalpha/keydb:latest
+    container_name: keydb_test
+    command:
+      [
+        "keydb-server",
+        "--port", "6479",
+        "--bind", "0.0.0.0",
+        "--protected-mode", "no",
+        "--requirepass", "devpass",
+        "--appendonly", "no"
+      ]
+    ports:
+      - "6479:6479"
+    healthcheck:
+      test: [ "CMD-SHELL", "keydb-cli -p 6479 -a devpass PING | grep -q PONG" ]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  seed:
+    image: redis:7-alpine
+    depends_on:
+      keydb:
+        condition: service_healthy
+    entrypoint: [ "/bin/sh", "-c" ]
+    command: >
+      redis-cli -h keydb -p 6479 -a devpass HSET fx:rates KGS 99.9 &&
+      echo "seed ok" &&
+      sleep infinity
+
+  killer:
+    image: alpine:3.20
+    depends_on:
+      - keydb
+    command: >
+      sh -lc '
+        apk add --no-cache iproute2 >/dev/null;
+        echo "[killer] started";
+        while true; do
+          echo "[killer] drop connections to keydb:6379";
+          tc qdisc add dev eth0 root netem loss 100% 2>/dev/null || true;
+          sleep 3;
+          echo "[killer] restore network";
+          tc qdisc del dev eth0 root 2>/dev/null || true;
+          sleep 5;
+        done
+      '
+    cap_add:
+      - NET_ADMIN
