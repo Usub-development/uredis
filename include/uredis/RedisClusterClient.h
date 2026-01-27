@@ -129,6 +129,8 @@ namespace usub::uredis {
         std::optional<RedisResult<void> > init_result_;
         bool standalone_mode_{false};
 
+        sync::AsyncMutex rediscover_mutex_;
+
         static std::string_view extract_hash_tag(std::string_view key);
 
         static std::uint16_t calc_slot(std::string_view key);
@@ -139,16 +141,21 @@ namespace usub::uredis {
 
         RedisResult<int> node_index_for_key_nolock(std::string_view key);
 
+        static bool is_slot_mapping_empty_error(const RedisError &e) noexcept;
+
+        static task::Awaitable<void> warm_pool_fill_to_max(
+            const RedisClusterConfig &cfg,
+            const std::shared_ptr<Node> &node);
+
         task::Awaitable<RedisResult<void> > initial_discovery();
 
+        task::Awaitable<RedisResult<void> > rediscover_slots_serialized();
+
         task::Awaitable<RedisResult<std::shared_ptr<RedisClient> > >
-        get_or_create_main_client_for_node(
-            std::string_view host,
-            std::uint16_t port);
+        get_or_create_main_client_for_node(std::string_view host, std::uint16_t port);
 
         task::Awaitable<RedisResult<PooledClient> >
-        acquire_client_for_node_locked(
-            const std::shared_ptr<Node> &node);
+        acquire_client_for_node_locked(const std::shared_ptr<Node> &node);
 
         task::Awaitable<void>
         release_pooled_client(PooledClient &&pc, bool connection_faulty);
