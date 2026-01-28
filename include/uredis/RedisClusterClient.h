@@ -40,6 +40,8 @@ namespace usub::uredis {
 
         int max_redirections{5};
         std::size_t max_connections_per_node{4};
+
+        bool force_standalone{false};
     };
 
     class RedisClusterClient {
@@ -103,11 +105,7 @@ namespace usub::uredis {
             std::shared_ptr<RedisClient> client;
         };
 
-        enum class RedirType {
-            None,
-            Moved,
-            Ask
-        };
+        enum class RedirType { None, Moved, Ask };
 
         struct Redirection {
             RedirType type{RedirType::None};
@@ -147,6 +145,10 @@ namespace usub::uredis {
             const RedisClusterConfig &cfg,
             const std::shared_ptr<Node> &node);
 
+        void setup_standalone_locked();
+
+        bool has_full_slot_mapping_locked() const noexcept;
+
         task::Awaitable<RedisResult<void> > initial_discovery();
 
         task::Awaitable<RedisResult<void> > rediscover_slots_serialized();
@@ -160,14 +162,11 @@ namespace usub::uredis {
         task::Awaitable<void>
         release_pooled_client(PooledClient &&pc, bool connection_faulty);
 
-        task::Awaitable<RedisResult<PooledClient> >
-        acquire_client_for_slot(int slot);
+        task::Awaitable<RedisResult<PooledClient> > acquire_client_for_slot(int slot);
 
-        task::Awaitable<RedisResult<PooledClient> >
-        acquire_client_for_any();
+        task::Awaitable<RedisResult<PooledClient> > acquire_client_for_any();
 
-        task::Awaitable<RedisResult<PooledClient> >
-        acquire_client_for_key(std::string_view key);
+        task::Awaitable<RedisResult<PooledClient> > acquire_client_for_key(std::string_view key);
 
         task::Awaitable<void> apply_moved(const Redirection &r);
     };
