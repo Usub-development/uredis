@@ -1,0 +1,242 @@
+version: "3.9"
+
+services:
+  redis-7000:
+    image: redis:7-alpine
+    container_name: redis-7000
+    hostname: redis-7000
+    restart: unless-stopped
+    networks: [ redis-cluster ]
+    ports:
+      - "7000:6379"
+      - "17000:16379"
+    volumes:
+      - redis-7000-data:/data
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --protected-mode
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6379"
+      - --requirepass
+      - redispass
+      - --masterauth
+      - redispass
+      - --cluster-announce-hostname
+      - redis-7000
+      - --cluster-announce-port
+      - "6379"
+      - --cluster-announce-bus-port
+      - "16379"
+
+  redis-7001:
+    image: redis:7-alpine
+    container_name: redis-7001
+    hostname: redis-7001
+    restart: unless-stopped
+    networks: [ redis-cluster ]
+    ports:
+      - "7001:6379"
+      - "17001:16379"
+    volumes:
+      - redis-7001-data:/data
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --protected-mode
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6379"
+      - --requirepass
+      - redispass
+      - --masterauth
+      - redispass
+      - --cluster-announce-hostname
+      - redis-7001
+      - --cluster-announce-port
+      - "6379"
+      - --cluster-announce-bus-port
+      - "16379"
+
+  redis-7002:
+    image: redis:7-alpine
+    container_name: redis-7002
+    hostname: redis-7002
+    restart: unless-stopped
+    networks: [ redis-cluster ]
+    ports:
+      - "7002:6379"
+      - "17002:16379"
+    volumes:
+      - redis-7002-data:/data
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --protected-mode
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6379"
+      - --requirepass
+      - redispass
+      - --masterauth
+      - redispass
+      - --cluster-announce-hostname
+      - redis-7002
+      - --cluster-announce-port
+      - "6379"
+      - --cluster-announce-bus-port
+      - "16379"
+
+  redis-7003:
+    image: redis:7-alpine
+    container_name: redis-7003
+    hostname: redis-7003
+    restart: unless-stopped
+    networks: [ redis-cluster ]
+    ports:
+      - "7003:6379"
+      - "17003:16379"
+    volumes:
+      - redis-7003-data:/data
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --protected-mode
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6379"
+      - --requirepass
+      - redispass
+      - --masterauth
+      - redispass
+      - --cluster-announce-hostname
+      - redis-7003
+      - --cluster-announce-port
+      - "6379"
+      - --cluster-announce-bus-port
+      - "16379"
+
+  redis-7004:
+    image: redis:7-alpine
+    container_name: redis-7004
+    hostname: redis-7004
+    restart: unless-stopped
+    networks: [ redis-cluster ]
+    ports:
+      - "7004:6379"
+      - "17004:16379"
+    volumes:
+      - redis-7004-data:/data
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --protected-mode
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6379"
+      - --requirepass
+      - redispass
+      - --masterauth
+      - redispass
+      - --cluster-announce-hostname
+      - redis-7004
+      - --cluster-announce-port
+      - "6379"
+      - --cluster-announce-bus-port
+      - "16379"
+
+  redis-7005:
+    image: redis:7-alpine
+    container_name: redis-7005
+    hostname: redis-7005
+    restart: unless-stopped
+    networks: [ redis-cluster ]
+    ports:
+      - "7005:6379"
+      - "17005:16379"
+    volumes:
+      - redis-7005-data:/data
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - /data/nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --protected-mode
+      - "no"
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "6379"
+      - --requirepass
+      - redispass
+      - --masterauth
+      - redispass
+      - --cluster-announce-hostname
+      - redis-7005
+      - --cluster-announce-port
+      - "6379"
+      - --cluster-announce-bus-port
+      - "16379"
+
+networks:
+  redis-cluster:
+    driver: bridge
+
+volumes:
+  redis-7000-data:
+  redis-7001-data:
+  redis-7002-data:
+  redis-7003-data:
+  redis-7004-data:
+  redis-7005-data:

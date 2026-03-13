@@ -48,16 +48,16 @@ namespace usub::uredis {
     public:
         explicit RedisClusterClient(RedisClusterConfig cfg);
 
-        task::Awaitable<RedisResult<void> > connect();
+        task::Awaitable<RedisResult<void>> connect();
 
-        task::Awaitable<RedisResult<RedisValue> > command(
+        task::Awaitable<RedisResult<RedisValue>> command(
             std::string_view cmd,
             std::span<const std::string_view> args);
 
         template<typename... Args>
-        task::Awaitable<RedisResult<RedisValue> > command(
+        task::Awaitable<RedisResult<RedisValue>> command(
             std::string_view cmd,
-            Args &&... args) {
+            Args&&... args) {
             std::array<std::string_view, sizeof...(Args)> arr{
                 std::string_view{std::forward<Args>(args)}...
             };
@@ -66,33 +66,28 @@ namespace usub::uredis {
                 std::span<const std::string_view>(arr.data(), arr.size()));
         }
 
-        task::Awaitable<RedisResult<std::shared_ptr<RedisClient> > >
+        task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
         get_client_for_key(std::string_view key);
 
-        task::Awaitable<RedisResult<std::shared_ptr<RedisClient> > >
+        task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
         get_any_client();
 
-        task::Awaitable<RedisResult<std::shared_ptr<RedisClient> > >
+        task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
         get_client_for_slot(int slot);
 
     private:
         struct Node {
             RedisConfig cfg;
-            std::shared_ptr<RedisClient> main_client;
 
-            usub::queue::concurrent::MPMCQueue<std::shared_ptr<RedisClient> > idle;
+            usub::queue::concurrent::MPMCQueue<std::shared_ptr<RedisClient>> idle;
             std::atomic<std::size_t> live_count{0};
 
             sync::AsyncSemaphore idle_sem{0};
-            std::atomic<uint32_t> waiters{0};
+            std::atomic<std::uint32_t> waiters{0};
 
             Node(RedisConfig cfg_, std::size_t max_pool)
                 : cfg(std::move(cfg_))
-                  , idle(max_pool)
-                  , live_count(0)
-                  , idle_sem(0)
-                  , waiters(0) {
-            }
+                , idle(max_pool) {}
 
             void notify_waiters_if_any() noexcept {
                 if (waiters.load(std::memory_order_relaxed) > 0)
@@ -115,8 +110,10 @@ namespace usub::uredis {
         };
 
         RedisClusterConfig cfg_;
-        std::vector<std::shared_ptr<Node> > nodes_;
+
+        std::vector<std::shared_ptr<Node>> nodes_;
         std::array<int, 16384> slot_to_node_{};
+        bool standalone_mode_{false};
 
         sync::AsyncMutex mutex_;
 
@@ -124,51 +121,49 @@ namespace usub::uredis {
         sync::AsyncEvent init_event_{sync::Reset::Manual, false};
         bool init_started_{false};
         bool init_finished_{false};
-        std::optional<RedisResult<void> > init_result_;
-        bool standalone_mode_{false};
+        std::optional<RedisResult<void>> init_result_;
 
         sync::AsyncMutex rediscover_mutex_;
 
         static std::string_view extract_hash_tag(std::string_view key);
-
         static std::uint16_t calc_slot(std::string_view key);
+        static std::optional<Redirection> parse_redirection(const std::string& msg);
+        static bool is_slot_mapping_empty_error(const RedisError& e) noexcept;
 
-        static std::optional<Redirection> parse_redirection(const std::string &msg);
+        RedisResult<int> node_index_for_slot_locked(int slot) const;
+        RedisResult<int> node_index_for_key_locked(std::string_view key) const;
 
-        RedisResult<int> node_index_for_slot_nolock(int slot);
-
-        RedisResult<int> node_index_for_key_nolock(std::string_view key);
-
-        static bool is_slot_mapping_empty_error(const RedisError &e) noexcept;
-
-        static task::Awaitable<void> warm_pool_fill_to_max(
-            const RedisClusterConfig &cfg,
-            const std::shared_ptr<Node> &node);
+        int ensure_node_locked(std::string_view host, std::uint16_t port);
 
         void setup_standalone_locked();
-
         bool has_full_slot_mapping_locked() const noexcept;
 
-        task::Awaitable<RedisResult<void> > initial_discovery();
+        task::Awaitable<RedisResult<std::shared_ptr<RedisClient>>>
+        connect_to_node(std::string_view host, std::uint16_t port);
 
-        task::Awaitable<RedisResult<void> > rediscover_slots_serialized();
+        static task::Awaitable<void> warm_pool_fill_to_max(
+            const RedisClusterConfig& cfg,
+            const std::shared_ptr<Node>& node);
 
-        task::Awaitable<RedisResult<std::shared_ptr<RedisClient> > >
-        get_or_create_main_client_for_node(std::string_view host, std::uint16_t port);
-
-        task::Awaitable<RedisResult<PooledClient> >
-        acquire_client_for_node_locked(const std::shared_ptr<Node> &node);
+        task::Awaitable<RedisResult<PooledClient>>
+        acquire_from_node(const std::shared_ptr<Node>& node);
 
         task::Awaitable<void>
-        release_pooled_client(PooledClient &&pc, bool connection_faulty);
+        release_pooled(PooledClient&& pc, bool faulty);
 
-        task::Awaitable<RedisResult<PooledClient> > acquire_client_for_slot(int slot);
+        task::Awaitable<RedisResult<PooledClient>> acquire_for_slot(int slot);
+        task::Awaitable<RedisResult<PooledClient>> acquire_for_any();
+        task::Awaitable<RedisResult<PooledClient>> acquire_for_key(std::string_view key);
 
-        task::Awaitable<RedisResult<PooledClient> > acquire_client_for_any();
+        task::Awaitable<RedisResult<void>> initial_discovery();
+        task::Awaitable<RedisResult<void>> rediscover_slots_serialized();
 
-        task::Awaitable<RedisResult<PooledClient> > acquire_client_for_key(std::string_view key);
+        task::Awaitable<void> apply_moved(const Redirection& r);
 
-        task::Awaitable<void> apply_moved(const Redirection &r);
+        task::Awaitable<RedisResult<RedisValue>> execute_ask(
+            const Redirection& r,
+            std::string_view cmd,
+            std::span<const std::string_view> args);
     };
 } // namespace usub::uredis
 

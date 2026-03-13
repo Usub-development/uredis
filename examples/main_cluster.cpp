@@ -26,16 +26,32 @@ task::Awaitable<void> bootstrap(usub::uredis::RedisClusterClient& cluster)
 
 task::Awaitable<void> example_after_bootstrap(usub::uredis::RedisClusterClient& cluster)
 {
-    auto res = co_await cluster.command("HGET", "fx:rates", "KGS");
+    info("writing fx:rates[KGS] ...");
 
-    if (!res)
+    auto set_res = co_await cluster.command("HSET", "fx:rates", "KGS", "1.123456");
+    if (!set_res)
     {
-        const auto& e = res.error();
-        error("HGET failed: {} {}", static_cast<int>(e.category), e.message);
+        const auto& e = set_res.error();
+        error("HSET failed: category={} msg={}",
+              static_cast<int>(e.category), e.message);
         co_return;
     }
 
-    const auto& v = *res;
+    info("HSET OK, sleeping before read...");
+    co_await system::this_coroutine::sleep_for(std::chrono::milliseconds(1000));
+
+    info("reading fx:rates[KGS] ...");
+
+    auto get_res = co_await cluster.command("HGET", "fx:rates", "KGS");
+    if (!get_res)
+    {
+        const auto& e = get_res.error();
+        error("HGET failed: category={} msg={}",
+              static_cast<int>(e.category), e.message);
+        co_return;
+    }
+
+    const auto& v = *get_res;
     if (v.is_null())
     {
         info("KGS not found");
@@ -49,7 +65,12 @@ task::Awaitable<void> example_after_bootstrap(usub::uredis::RedisClusterClient& 
 task::Awaitable<void> run_all()
 {
     usub::uredis::RedisClusterConfig cfg;
-    cfg.seeds = {{"127.0.0.1", 6379}};
+    cfg.seeds = {
+        {"127.0.0.1", 7000},
+        {"127.0.0.1", 7001},
+        {"127.0.0.1", 7002},
+    };
+    cfg.password                 = "redispass";
     cfg.max_redirections         = 8;
     cfg.max_connections_per_node = 4;
 
